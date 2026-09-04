@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Local OS metadata and temporary smoke-test outputs
+.DS_Store
+tmp/
+
 
 # customized
 *.tsv
