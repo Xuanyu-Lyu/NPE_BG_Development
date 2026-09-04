@@ -43,7 +43,7 @@ After the environment has been created, complete these two steps:
 Then verify the installation from the repository root:
 
 ```bash
-python scripts/check_environment.py
+python devtools/check_environment.py
 ```
 
 To update an environment after `environment.yml` changes:
