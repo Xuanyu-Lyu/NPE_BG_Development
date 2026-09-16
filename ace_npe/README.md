@@ -53,8 +53,8 @@ python 08_compare_fixed_n_dirichlet_openmx.py
 # 09 — N=20,000 comparison across NPE training-set sizes
 python 09_compare_n20000_training_sizes.py
 
-# 10 — 500 repeated datasets at fixed N=1000 and theta=(0.4,0.3,0.3)
-python 10_evaluate_fixed_theta_n1000.py
+# 10 — 500 repeated datasets per N at fixed theta=(0.4,0.3,0.3)
+python 10_evaluate_fixed_theta.py
 ```
 
 `demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
@@ -139,7 +139,7 @@ ace_npe/
 ├── 08_compare_fixed_n_dirichlet_openmx.py  paired fixed-N comparison
 ├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
 ├── 09_compare_n20000_training_sizes.py     20k/50k/100k training comparison
-├── 10_evaluate_fixed_theta_n1000.py  fixed-theta repeated-data evaluation
+├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
 ├── demo_single_fit.ipynb             worked single-observation example
 ├── prior_compare/                    isolated optional multi-prior pipeline
 │   ├── 01_generate_prior_data.py
