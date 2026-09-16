@@ -49,6 +49,7 @@ import torch
 import torch.nn as nn
 import joblib
 from scipy.stats import gaussian_kde
+from torch.distributions import Distribution, constraints
 
 
 # ============================================================================
@@ -163,14 +164,20 @@ def simulate_covariances(A, C, E, N_pairs):
     return np.cov(df_mz, rowvar=False), np.cov(df_dz, rowvar=False)
 
 
-def generate_training_data(n_samples=20000, n_pairs_options=None, seed=42):
+def generate_training_data(
+    n_samples=20000,
+    n_pairs_options=None,
+    seed=42,
+    total_variance=1.0,
+    dirichlet_alpha=(1.0, 1.0, 1.0),
+):
     """
     Generate a (theta, x) training set for the NPE.
 
     For each sample:
-      1. Draw A, C, E independently and uniformly from [0, 1].  No sum-to-1
-         constraint is imposed, so the network learns the unstandardized
-         scale as well as the ratios.
+      1. Draw ACE proportions from a Dirichlet distribution, then multiply by
+         ``total_variance``.  Thus A, C, and E are positive and sum exactly to
+         the fixed phenotypic variance V.
       2. Pick N_pairs — fixed if ``n_pairs_options`` holds a single value,
          otherwise drawn at random from it.
       3. Simulate twin data and reduce each 2x2 sample covariance matrix to
@@ -187,11 +194,23 @@ def generate_training_data(n_samples=20000, n_pairs_options=None, seed=42):
                          default never has to extrapolate its se_proxy
                          (1/sqrt(N)) feature beyond what it saw in training.
         seed:            NumPy random seed.
+        total_variance:  Fixed value of V=A+C+E (default 1).
+        dirichlet_alpha: Positive concentration parameters for (A,C,E),
+                         defaulting to (1,1,1), uniform on the simplex.
 
     Returns:
         pd.DataFrame with columns
-        [mz_var, mz_cov, dz_var, dz_cov, N_pairs, log_N_pairs, se_proxy, A, C, E]
+        [mz_var, mz_cov, dz_var, dz_cov, N_pairs, log_N_pairs, se_proxy,
+         A, C, E, V, simulation_scheme]
     """
+    if n_samples <= 0:
+        raise ValueError("n_samples must be positive")
+    if total_variance <= 0:
+        raise ValueError("total_variance must be positive")
+    alpha = np.asarray(dirichlet_alpha, dtype=float)
+    if alpha.shape != (3,) or np.any(alpha <= 0):
+        raise ValueError("dirichlet_alpha must contain three positive values")
+
     if n_pairs_options is None:
         n_pairs_options = [50, 100, 200, 500, 1000, 2000, 5000, 20000]
 
@@ -203,9 +222,8 @@ def generate_training_data(n_samples=20000, n_pairs_options=None, seed=42):
 
     records = []
     for i in range(n_samples):
-        A = float(np.random.uniform(0, 1))
-        C = float(np.random.uniform(0, 1))
-        E = float(np.random.uniform(0, 1))
+        A, C, E = total_variance * np.random.dirichlet(alpha)
+        A, C, E = float(A), float(C), float(E)
 
         N_pairs = (n_pairs_options[0] if fixed_n
                    else int(np.random.choice(n_pairs_options)))
@@ -223,12 +241,104 @@ def generate_training_data(n_samples=20000, n_pairs_options=None, seed=42):
             "log_N_pairs": np.log(N_pairs),
             "se_proxy":    1.0 / np.sqrt(N_pairs),
             "A": A, "C": C, "E": E,
+            "V": float(A + C + E),
+            "simulation_scheme": "dirichlet",
         })
 
         if (i + 1) % 5000 == 0:
             print(f"  Generated {i + 1}/{n_samples} samples...")
 
     return pd.DataFrame(records)
+
+
+def ace_to_alr(ace):
+    """Map positive ACE compositions to log(A/E), log(C/E)."""
+    values = np.asarray(ace, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 3:
+        raise ValueError("ace must have shape (n, 3)")
+    if np.any(values <= 0):
+        raise ValueError("Dirichlet ACE targets must be strictly positive")
+    proportions = values / values.sum(axis=1, keepdims=True)
+    return np.log(proportions[:, :2] / proportions[:, 2:3]).astype(np.float32)
+
+
+def alr_to_ace(latent, total_variance=1.0):
+    """Map log(A/E), log(C/E) coordinates back to fixed-sum ACE values."""
+    baseline = torch.zeros(
+        (*latent.shape[:-1], 1), dtype=latent.dtype, device=latent.device
+    )
+    proportions = torch.softmax(torch.cat([latent, baseline], dim=-1), dim=-1)
+    return float(total_variance) * proportions
+
+
+class DirichletALRPrior(Distribution):
+    """Exact Dirichlet prior expressed in two additive-log-ratio coordinates."""
+
+    arg_constraints = {}
+    support = constraints.independent(constraints.real, 1)
+    has_rsample = False
+
+    def __init__(
+        self,
+        dirichlet_alpha=(1.0, 1.0, 1.0),
+        device="cpu",
+        validate_args=None,
+    ):
+        self.alpha = torch.as_tensor(
+            dirichlet_alpha, dtype=torch.float32, device=device
+        )
+        if self.alpha.shape != (3,) or torch.any(self.alpha <= 0):
+            raise ValueError("dirichlet_alpha must contain three positive values")
+        super().__init__(torch.Size(), torch.Size([2]), validate_args=validate_args)
+
+    def sample(self, sample_shape=torch.Size()):
+        composition = torch.distributions.Dirichlet(self.alpha).sample(
+            torch.Size(sample_shape)
+        )
+        return torch.log(composition[..., :2] / composition[..., 2:3])
+
+    def log_prob(self, value):
+        baseline = torch.zeros(
+            (*value.shape[:-1], 1), dtype=value.dtype, device=value.device
+        )
+        composition = torch.softmax(
+            torch.cat([value, baseline], dim=-1), dim=-1
+        )
+        alpha = self.alpha.to(value.device, value.dtype)
+        # The inverse ALR Jacobian is prod(A,C,E) on the unit simplex.
+        log_jacobian = torch.log(composition).sum(dim=-1)
+        return (
+            torch.distributions.Dirichlet(alpha).log_prob(composition)
+            + log_jacobian
+        )
+
+    def to(self, device):
+        self.alpha = self.alpha.to(device)
+        return self
+
+
+class DirichletACEPosterior:
+    """Expose a latent ALR posterior as positive A, C, E draws summing to V."""
+
+    def __init__(self, latent_posterior, total_variance=1.0):
+        self.latent_posterior = latent_posterior
+        self.total_variance = float(total_variance)
+
+    @property
+    def _neural_net(self):
+        return self.latent_posterior.posterior_estimator
+
+    def sample(self, sample_shape=torch.Size(), x=None, **kwargs):
+        latent = self.latent_posterior.sample(sample_shape, x=x, **kwargs)
+        return alr_to_ace(latent, self.total_variance)
+
+    def set_default_x(self, x):
+        self.latent_posterior.set_default_x(x)
+        return self
+
+    def to(self, device):
+        self.latent_posterior.to(device)
+        return self
 
 
 # ============================================================================

@@ -18,7 +18,7 @@ Every path below is relative to this folder. Scripts resolve their own
 locations, so they can be run from anywhere.
 
 ```bash
-# 01 — simulate training data          -> data/ace_training_data.csv
+# 01 — simulate Dirichlet ACE data     -> data/ace_training_data.csv
 python 01_generate_training_data.py --n_samples 50000
 
 # 02 — train the NPE                   -> results/models/se_proxy/
@@ -34,7 +34,7 @@ Rscript 04_fit_openmx_reference.R
 # 05 — NPE on the same test conditions -> results/simulations/
 python 05_simulate_posterior_recovery.py --model_dir se_proxy \
        --output npe_simulation_results.csv
-python 05_simulate_posterior_recovery.py --model_dir no_n_pairs_gaussian_prior \
+python 05_simulate_posterior_recovery.py --model_dir no_n_pairs_dirichlet \
        --output npe_simulation_results_no_n.csv
 
 # 06 — comparison figures and tables   -> results/analysis/
@@ -51,6 +51,67 @@ jupyter lab 07_se_calibration.ipynb
 `demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
 it is not a pipeline step.
 
+### Optional 01b--03b prior-distribution comparison
+
+This archived comparison contrasts the former independent uniforms with two fixed-sum
+generators. The `normalized_uniform` arm intentionally draws three iid
+`Uniform(0,1)` values and divides by their sum; it is not uniform on the
+simplex. The `dirichlet` arm uses the proper `Dirichlet(1,1,1)` simplex-uniform
+distribution.
+
+```bash
+# 18 datasets: 3 schemes x 6 fixed N values -> data/prior_comparison/
+python 01b_generate_prior_comparison_data.py --n_samples 50000
+
+# Validate the Dirichlet draws and save a ternary density figure
+python 01c_validate_dirichlet_prior.py \
+       --data prior_comparison/ace_dirichlet_N100.csv
+
+# 18 separately trained fixed-N models -> results/models/prior_comparison/
+# N is deliberately not an input feature.
+python 02b_train_prior_comparison.py --epochs 500 --device cpu
+
+# Compare each model only with OOS data drawn from its matching distribution
+# -> results/prior_comparison/
+python 03b_compare_prior_performance.py --n_samples 500 \
+       --n_posterior_samples 1000
+```
+
+The comparison selected the Dirichlet arm for the formal 01→02 pipeline. The
+fixed-sum models learn two additive-log-ratio coordinates and reconstruct
+the third component, so every posterior draw is positive and sums exactly to
+one. Separate models are trained at `N = 50, 100, 500, 1000, 5000, 20000`; none
+receives `N_pairs`, `log_N_pairs`, or `se_proxy` as an input feature. STEP 03b
+tests each model only on a fresh OOS set generated from that model's matching
+prior scheme. For every test dataset and ACE parameter,
+`matched_predictions.csv` records posterior mean, sample SD, minimum, maximum,
+median, 2.5%/97.5% quantiles, skewness, Fisher excess kurtosis, and the rank and
+percentile of the true parameter among the posterior draws. Raw posterior draws
+are not retained.
+
+### Paired Dirichlet OpenMx--NPE comparison
+
+STEP 03c uses only `Dirichlet(1,1,1)` ACE parameters. For every condition and
+sample size, it simulates one MZ and one DZ covariance matrix, fits OpenMx to
+those matrices, and evaluates the matching fixed-N NPE on their standard
+four-feature reduction. Both estimators' metrics use the same rows on which
+OpenMx converged.
+
+```bash
+# Only needed once because N=2000 was not in the original 01b--03b grid
+python 01b_generate_prior_comparison_data.py --schemes dirichlet \
+       --n_pairs 2000 --skip_manifest
+python 02b_train_prior_comparison.py --schemes dirichlet --n_pairs 2000
+
+# 200 shared conditions at N=50,100,500,1000,2000,5000,20000
+# -> results/dirichlet_openmx_comparison/
+python 03c_compare_dirichlet_openmx.py
+```
+
+Use `--reuse_data` to preserve the paired simulated data on a repeat run and
+`--reuse_openmx` to avoid refitting OpenMx. The latter should only be used
+together with an unchanged paired dataset.
+
 ---
 
 ## Layout
@@ -58,9 +119,16 @@ it is not a pipeline step.
 ```
 ace_npe/
 ├── ace_model.py                      shared library — imported by everything
+├── ace_prior_comparison.py           shared transforms/priors for 01b--03b
 ├── 01_generate_training_data.py      simulate (θ, x) training pairs
+├── 01b_generate_prior_comparison_data.py  simulate the three prior arms
+├── 01c_validate_dirichlet_prior.py    ternary + moment checks for Dirichlet draws
 ├── 02_train_npe.py                   train the normalizing flow
+├── 02b_train_prior_comparison.py     train one NPE per prior arm
 ├── 03_evaluate_oos_predictions.py    calibration / coverage on fresh draws
+├── 03b_compare_prior_performance.py  matched-prior comparison by fixed N
+├── 03c_compare_dirichlet_openmx.py    paired Dirichlet OpenMx vs fixed-N NPE
+├── 03c_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 03c
 ├── 04_fit_openmx_reference.R         OpenMx MLE reference + test conditions
 ├── 05_simulate_posterior_recovery.py NPE fits on those same conditions
 ├── 06_analysis.ipynb                 OpenMx vs NPE comparison
@@ -82,10 +150,10 @@ ace_npe/
 
 Python cannot import a module whose name begins with a digit —
 `from 02_train_npe import ...` is a syntax error. So **no numbered script is
-ever imported by another**. Everything shared lives in `ace_model.py`:
-the model math, the folder paths, the embedding-net class, and the posterior
-helpers (`load_posterior`, `build_features`, `posterior_stats`,
-`map_from_samples`). Numbered scripts are pure entry points.
+ever imported by another**. General pipeline utilities live in `ace_model.py`;
+the isolated 01b--03b experiment uses `ace_prior_comparison.py` for its
+simulation schemes, log-ratio transform, and posterior wrapper. Numbered
+scripts remain pure entry points.
 
 ---
 
@@ -330,23 +398,12 @@ run's own `config.json` rather than from any hard-coded ordering.
 (`z_score_theta='independent'`), so the flow works in standardized parameter
 space and its base distribution stays well matched.
 
-**The prior** plays two roles: it is the distribution the training $\theta_i$
-are drawn from, and it defines the support `sbi` will sample within. Note a
-deliberate mismatch in this pipeline:
-
-- Training $\theta$ are drawn as $A, C, E \sim \mathcal U(0,1)$
-  **independently** — no sum-to-one constraint (see
-  `ace_model.generate_training_data`). This is the *effective* prior the
-  learned posterior is conditioned on.
-- The prior handed to `sbi` is a `BoxUniform` derived from the training range
-  **inflated by `--prior_buffer`** (default 0.5), giving bounds like
-  $[-1, 2]$ per parameter.
-
-The wider declared box exists so `sbi` does not truncate or reject draws near
-the edges of the region the flow was actually trained on. The consequence is
-that posterior draws can fall slightly outside $[0,1]$, and the demo passes
-`reject_outside_prior=False` accordingly. Interpret the posterior as being
-under the $\mathcal U(0,1)^3$ prior, not the declared box.
+**The prior** plays two matching roles: STEP 01 draws
+$\theta=(A,C,E)$ from $V\,\mathrm{Dirichlet}(\alpha_A,\alpha_C,\alpha_E)$,
+and STEP 02 passes that same Dirichlet distribution to `sbi` in additive-log-
+ratio coordinates. Defaults are $V=1$ and $\alpha=(1,1,1)$, which is uniform
+on the ACE simplex. The flow learns $\log(A/E)$ and $\log(C/E)$; its posterior
+wrapper reconstructs positive A, C, and E draws whose sum is exactly V.
 
 ### 3.6 Hyperparameters
 
@@ -359,8 +416,8 @@ used `flow_hidden=128, flow_transforms=8`.
 | `--flow_type` | `nsf` | spline flow; also `maf`, `maf_rqs`, `mdn` |
 | `--flow_hidden` | 64 | width of the conditioner networks inside the flow |
 | `--flow_transforms` | 5 | number of stacked spline transforms |
-| `--prior_type` | `boxuniform` | or `gaussian` |
-| `--prior_buffer` | 0.5 | inflation of the prior box beyond the training range |
+| `--dirichlet_alpha` | `1 1 1` | concentration parameters for A, C, E; must match STEP 01 |
+| `--total_variance` | 1 | fixed V=A+C+E; must match STEP 01 |
 | `--batch_size` | 1024 | large batches suit the cheap simulator |
 | `--lr` | 5e-4 | Adam learning rate |
 | `--epochs` | 500 | maximum; early stopping usually triggers first |
@@ -390,16 +447,16 @@ job for the network.
 
 ## Part 4 — The pipeline, step by step
 
-**`01_generate_training_data.py`** — draws $A, C, E \sim \mathcal U(0,1)$
-independently, picks $N$, simulates twin pairs, reduces each 2×2 sample
+**`01_generate_training_data.py`** — draws $(A,C,E)$ from
+$V\,\mathrm{Dirichlet}(\alpha)$, picks $N$, simulates twin pairs, reduces each 2×2 sample
 covariance matrix through `summarize_cov`, and records the four resulting
 statistics plus all three $N$ encodings. Fixed-$N$ files
 (`--n_pairs 20000`) are used to train the "no N" models. → `data/`
 
 **`02_train_npe.py`** — cleans the data (drops rows where $|cov| > |var|$,
 which cannot come from a valid covariance matrix), splits, standardizes, builds
-the prior from the training range, trains the flow, then evaluates on the
-held-out test split with posterior mean, MAP and posterior SD.
+the exact matching Dirichlet prior in ALR coordinates, trains the flow, then
+evaluates on the held-out test split with posterior mean, MAP and posterior SD.
 → `results/models/<run>/` containing `posterior.pkl`, `config.json`,
 `feature_scaler.pkl`, `density_estimator.pt`, `test_metrics.json`, plots.
 
@@ -510,8 +567,8 @@ prior, $\hat\theta(x)$ is pulled toward the prior mean, which *reduces* the
 sampling variance of $\hat\theta$ below what the posterior SD reports. A
 minimal model makes this exact. Approximate the sampling distribution of a
 summary statistic by $\hat\theta_{\mathrm{lik}}(x)\sim\mathcal N(\theta_0,\sigma_{\mathrm{lik}}^2)$
-and the prior by $\theta\sim\mathcal N(\mu_0,\sigma_0^2)$ (a Gaussian stand-in
-for the pipeline's effective $\mathcal U(0,1)^3$ prior). Standard
+and the prior locally by $\theta\sim\mathcal N(\mu_0,\sigma_0^2)$ (a Gaussian
+approximation used only to illustrate shrinkage). Standard
 Normal–Normal conjugacy gives
 
 $$
@@ -570,12 +627,9 @@ averaged over a representative sample of $\theta$ drawn like the prior** —
 which is exactly what pooling `ratio_rmse` over many conditions approximates,
 and why it is the fairer target: 1.06–1.21 in-range, versus `ratio_se`'s 1.3.
 
-One caveat this identity makes explicit: the test conditions come from
-`04_fit_openmx_reference.R`'s Dirichlet(1,1,1) draws ($A+C+E=1$ exactly), not
-the pipeline's actual training prior — independent $A,C,E\sim\mathcal U(0,1)$
-(no sum constraint). The identity above is exact only when the two coincide, so
-residual drift of `ratio_rmse` away from 1 partly reflects that mismatch, not
-purely flow miscalibration.
+The formal pipeline and `04_fit_openmx_reference.R` now share the default
+Dirichlet(1,1,1) distribution with $A+C+E=1$, so this former prior mismatch no
+longer applies after retraining the formal NPE models.
 
 ### 5.4 `coverage95` — marginal vs. pointwise, and why per-condition coverage can miss 0.95
 
@@ -766,9 +820,9 @@ comparable with the mean reported SE plotted beneath it. Genuine
 fixed-condition sampling SEs come from STEP 07.
 
 **Posterior SD is not expected to equal the Monte-Carlo SD of the point
-estimate at small $N$.** The NPE posterior is Bayesian under an effective
-$\mathcal U(0,1)^3$ prior, so at small $N$ the posterior mean is shrunk toward
-the prior. Shrinkage *reduces* the sampling variance of the estimator while
+estimate at small $N$.** The NPE posterior is Bayesian under the selected
+Dirichlet prior, so at small $N$ the posterior mean is shrunk toward the prior.
+Shrinkage *reduces* the sampling variance of the estimator while
 introducing bias, so `mc_se` can sit below the reported posterior SD even for a
 perfectly calibrated posterior. Read STEP 07's three metrics together:
 `ratio_se` (vs the spread of point estimates), `ratio_rmse` (vs total error,
@@ -793,8 +847,8 @@ configure only the bypassed embedding network (they are still recorded into
 passed to `inference.train()`. They are retained so existing invocations keep
 working.
 
-**The declared prior is wider than the sampling distribution** — see §3.5.
-Posterior draws may fall outside $[0,1]$.
+**The declared and simulation priors now match.** The ALR posterior wrapper
+returns positive ACE draws and enforces $A+C+E=V$ exactly.
 
 **Posterior sampling runs on CPU by design.** `02_train_npe.py` may train on
 MPS or CUDA, but evaluation is forced to CPU: per-kernel launch overhead makes
@@ -819,8 +873,7 @@ python 01_generate_training_data.py --n_pairs 20000 --n_samples 20000 \
 python 02_train_npe.py --data ace_training_data.csv --include_n_pairs \
                        --epochs 500 --device cpu --output se_proxy
 python 02_train_npe.py --data ace_training_data_N20000.csv --epochs 500 \
-                       --device cpu --prior_type gaussian \
-                       --output no_n_pairs_gaussian_prior
+                       --device cpu --output no_n_pairs_dirichlet
 
 python 03_evaluate_oos_predictions.py --model_dir se_proxy
 
@@ -829,7 +882,7 @@ Rscript 04_fit_openmx_reference.R          # slowest step: 1400 OpenMx fits
 
 python 05_simulate_posterior_recovery.py --model_dir se_proxy \
        --output npe_simulation_results.csv
-python 05_simulate_posterior_recovery.py --model_dir no_n_pairs_gaussian_prior \
+python 05_simulate_posterior_recovery.py --model_dir no_n_pairs_dirichlet \
        --output npe_simulation_results_no_n.csv
 
 jupyter lab 06_analysis.ipynb

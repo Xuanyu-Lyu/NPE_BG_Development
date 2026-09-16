@@ -2,7 +2,9 @@
 STEP 02 — Neural Posterior Estimation (NPE) for ACE Parameter Estimation
 
 Uses sbi (SNPE-C / APT) to learn the full posterior over the A, C, E variance
-components given MZ and DZ twin covariance matrix elements.
+components under the Dirichlet prior used by STEP 01. The flow learns the two
+additive-log-ratio coordinates log(A/E) and log(C/E); returned posterior draws
+are transformed back to positive A, C, E values that sum to fixed V.
 
 Architecture overview
 ---------------------
@@ -18,7 +20,8 @@ Architecture overview
 
 Input features  (4):  mz_var, mz_cov, dz_var, dz_cov
                       Optionally add an N_pairs encoding with --include_n_pairs
-Output targets  (3):  A (additive genetic), C (shared env), E (unique env)
+Learned targets (2):  log(A/E), log(C/E)
+Posterior output (3): A, C, E, constrained so A+C+E=V
 
 Usage:
     # 1. Generate training data first
@@ -32,10 +35,10 @@ Usage:
     python 02_train_npe.py --data ace_training_data.csv --include_n_pairs \
                            --epochs 500 --device cpu --output se_proxy
 
-    # 4. Train with a gaussian prior instead of boxuniform
+    # 4. Use the same non-default Dirichlet prior as STEP 01, if applicable
     python 02_train_npe.py --data ace_training_data_N20000.csv --epochs 500 \
-                           --device cpu --prior_type gaussian \
-                           --output no_n_pairs_gaussian_prior
+                           --device cpu --dirichlet_alpha 2 2 2 \
+                           --output no_n_pairs_dirichlet
 """
 
 import sys
@@ -57,7 +60,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
 from sbi.inference import SNPE
-from sbi.utils import BoxUniform
 from sbi.neural_nets import posterior_nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,9 +67,12 @@ from ace_model import (
     ACE_PARAM_NAMES,
     COV_FEATURE_NAMES,
     ACEEmbeddingNet,  # noqa: F401 — used by the commented-out embedding path below
+    DirichletACEPosterior,
+    DirichletALRPrior,
     DATA_DIR,
     MODELS_DIR,
     VAR_REDUCTION,
+    ace_to_alr,
     map_from_samples,
     resolve,
 )
@@ -291,11 +296,13 @@ def main():
                         help='Hidden features within the flow (default: 64)')
     parser.add_argument('--flow_transforms', type=int, default=5,
                         help='Number of flow transforms (default: 5)')
-    parser.add_argument('--prior_buffer', type=float, default=0.5,
-                        help='Buffer fraction around training data range for prior (default: 0.5)')
-    parser.add_argument('--prior_type', type=str, default='boxuniform',
-                        choices=['boxuniform', 'gaussian'],
-                        help='Prior distribution type: boxuniform or gaussian (default: boxuniform)')
+    parser.add_argument('--total_variance', type=float, default=1.0,
+                        help='Fixed V=A+C+E used in STEP 01 (default: 1)')
+    parser.add_argument('--dirichlet_alpha', type=float, nargs=3,
+                        default=[1.0, 1.0, 1.0],
+                        metavar=('ALPHA_A', 'ALPHA_C', 'ALPHA_E'),
+                        help='Dirichlet concentration parameters used in STEP 01 '
+                             '(default: 1 1 1)')
     parser.add_argument('--n_posterior_samples', type=int, default=500,
                         help='Posterior samples per test observation for evaluation (default: 500)')
     parser.add_argument('--n_eval', type=int, default=200,
@@ -305,6 +312,11 @@ def main():
     parser.add_argument('--device', type=str, default='auto',
                         help='Device: auto, cpu, cuda, mps (default: auto)')
     args = parser.parse_args()
+
+    if args.total_variance <= 0:
+        parser.error('--total_variance must be positive')
+    if any(alpha <= 0 for alpha in args.dirichlet_alpha):
+        parser.error('--dirichlet_alpha values must be positive')
 
     data_path  = resolve(args.data, DATA_DIR)
     output_dir = resolve(args.output, MODELS_DIR)
@@ -346,7 +358,30 @@ def main():
             print("  Including se_proxy (1/√N_pairs) as feature  [derived from N_pairs]")
 
     X = df[feature_cols].values
-    y = df[ACE_PARAM_NAMES].values
+    y = df[ACE_PARAM_NAMES].values.astype(np.float32)
+
+    if 'simulation_scheme' in df.columns and not (
+        df['simulation_scheme'] == 'dirichlet'
+    ).all():
+        raise ValueError(
+            "STEP 02 now accepts Dirichlet training data only; "
+            "simulation_scheme contains another value"
+        )
+    if np.any(y <= 0):
+        raise ValueError('Dirichlet training targets A, C, E must all be positive')
+    observed_v = y.sum(axis=1)
+    max_sum_error = float(np.max(np.abs(observed_v - args.total_variance)))
+    if max_sum_error > 1e-5:
+        raise ValueError(
+            f'Training targets do not satisfy A+C+E={args.total_variance:g}; '
+            f'maximum absolute error is {max_sum_error:.3e}. '
+            'Use matching --total_variance values in STEP 01 and STEP 02.'
+        )
+    theta = ace_to_alr(y)
+    print(
+        f"  Dirichlet target check: max |A+C+E-V|={max_sum_error:.3e}; "
+        "learning log(A/E), log(C/E)"
+    )
 
     # ---- Train/val/test split (70/15/15) ----
     n_samples = len(df)
@@ -356,47 +391,29 @@ def main():
     n_val     = int(n_samples * 0.15)
 
     X_train = X[indices[:n_train]]
-    y_train = y[indices[:n_train]]
+    theta_train = theta[indices[:n_train]]
     X_val   = X[indices[n_train:n_train + n_val]]
-    y_val   = y[indices[n_train:n_train + n_val]]
+    theta_val = theta[indices[n_train:n_train + n_val]]
     X_test  = X[indices[n_train + n_val:]]
     y_test  = y[indices[n_train + n_val:]]
     print(f"\nData split: {len(X_train)} train | {len(X_val)} val | {len(X_test)} test")
 
-    # ---- Scale features  (theta NOT scaled — sbi handles that internally) ----
+    # ---- Scale features (ALR theta is not scaled here; sbi handles it) ----
     feature_scaler = StandardScaler()
     X_train_s = feature_scaler.fit_transform(X_train)
     X_val_s   = feature_scaler.transform(X_val)
     X_test_s  = feature_scaler.transform(X_test)
     joblib.dump(feature_scaler, output_dir / 'feature_scaler.pkl')
 
-    # ---- Define prior from training data range ----
+    # ---- Define the exact STEP 01 Dirichlet prior in ALR coordinates ----
     print("\n" + "="*70)
-    print(f"PRIOR DEFINITION ({args.prior_type.upper()} from training data range)")
+    print("PRIOR DEFINITION (EXACT DIRICHLET IN ALR COORDINATES)")
     print("="*70)
-
-    y_min  = y_train.min(axis=0)
-    y_max  = y_train.max(axis=0)
-    buffer = args.prior_buffer * (y_max - y_min)
-    prior_lower = torch.tensor(y_min - buffer, dtype=torch.float32)
-    prior_upper = torch.tensor(y_max + buffer, dtype=torch.float32)
-
-    if args.prior_type == 'boxuniform':
-        print(f"\n{'Parameter':<12} {'Lower':<12} {'Upper':<12}")
-        print("-"*38)
-        for p, lo, hi in zip(ACE_PARAM_NAMES, prior_lower, prior_upper):
-            print(f"  {p:<10} {lo.item():+.4f}      {hi.item():+.4f}")
-        prior = BoxUniform(low=prior_lower, high=prior_upper, device=str(device))
-    else:  # gaussian
-        prior_mean  = torch.tensor((y_min + y_max) / 2, dtype=torch.float32)
-        prior_std   = torch.tensor((y_max - y_min) / 2 + buffer, dtype=torch.float32)
-        print(f"\n{'Parameter':<12} {'Mean':<12} {'Std':<12}")
-        print("-"*38)
-        for p, mu, sigma in zip(ACE_PARAM_NAMES, prior_mean, prior_std):
-            print(f"  {p:<10} {mu.item():+.4f}      {sigma.item():.4f}")
-        prior = torch.distributions.Independent(
-            torch.distributions.Normal(prior_mean.to(device), prior_std.to(device)), 1
-        )
+    print(f"  Dirichlet alpha : {tuple(args.dirichlet_alpha)}")
+    print(f"  Fixed V         : {args.total_variance:g}")
+    print("  Flow targets    : log(A/E), log(C/E)")
+    print("  Returned draws  : positive A, C, E with A+C+E=V")
+    prior = DirichletALRPrior(args.dirichlet_alpha, device=str(device))
 
     # ---- Build density estimator ----
     print("\n" + "="*70)
@@ -448,10 +465,10 @@ def main():
     )
 
     X_all = np.vstack([X_train_s, X_val_s])
-    y_all = np.vstack([y_train,   y_val])
+    theta_all = np.vstack([theta_train, theta_val])
 
     inference.append_simulations(
-        theta=torch.tensor(y_all, dtype=torch.float32),
+        theta=torch.tensor(theta_all, dtype=torch.float32),
         x=torch.tensor(X_all, dtype=torch.float32),
     )
 
@@ -465,20 +482,20 @@ def main():
     )
 
     # ---- Build and save posterior ----
-    posterior = inference.build_posterior(density_estimator)
-    print("\n✓ Posterior built successfully.")
+    latent_posterior = inference.build_posterior(density_estimator)
+    latent_posterior.to('cpu')
+    posterior = DirichletACEPosterior(
+        latent_posterior, total_variance=args.total_variance
+    )
+    print("\n✓ Posterior built successfully (ALR draws are returned as A, C, E).")
 
-    prior_save = {'prior_type': args.prior_type}
-    if args.prior_type == 'boxuniform':
-        prior_save['prior_lower'] = prior_lower
-        prior_save['prior_upper'] = prior_upper
-    else:
-        prior_save['prior_mean'] = prior_mean
-        prior_save['prior_std']  = prior_std
     torch.save(
         {
             'density_estimator_state_dict': density_estimator.state_dict(),
-            **prior_save,
+            'prior_type': 'exact_dirichlet_ALR',
+            'dirichlet_alpha': list(args.dirichlet_alpha),
+            'total_variance': args.total_variance,
+            'theta_parameterization': 'ALR: log(A/E), log(C/E); E reconstructed',
         },
         output_dir / 'density_estimator.pt',
     )
@@ -511,10 +528,16 @@ def main():
         'hidden_sizes': args.hidden_sizes,
         'dropout_rate': args.dropout,
         'param_names': ACE_PARAM_NAMES,
-        'prior_type': args.prior_type,
-        **({'prior_lower': prior_lower.tolist(), 'prior_upper': prior_upper.tolist()}
-           if args.prior_type == 'boxuniform'
-           else {'prior_mean': prior_mean.tolist(), 'prior_std': prior_std.tolist()}),
+        'simulation_scheme': 'dirichlet',
+        'prior_type': 'exact_dirichlet_ALR',
+        'dirichlet_alpha': list(args.dirichlet_alpha),
+        'total_variance': args.total_variance,
+        'theta_parameterization': 'ALR: log(A/E), log(C/E); E reconstructed',
+        'latent_param_names': ['log_A_over_E', 'log_C_over_E'],
+        'training_rows': len(X_train),
+        'validation_rows': len(X_val),
+        'test_rows': len(X_test),
+        'source_data': str(data_path),
     }
     with open(output_dir / 'config.json', 'w') as f:
         json.dump(config, f, indent=2)
