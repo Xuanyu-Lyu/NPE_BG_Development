@@ -21,6 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from scipy.stats import binom, kurtosis, skew
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -444,7 +446,7 @@ def configure_n_axis(
     axis.grid(alpha=0.25)
 
 
-def save_bias_plot(
+def save_mean_bias_plot(
     metrics: pd.DataFrame,
     n_values: tuple[int, ...],
     path: Path,
@@ -499,6 +501,136 @@ def save_bias_plot(
     fig.suptitle(
         "Paired Dirichlet bias: OpenMx versus fixed-N NPE "
         f"(test set size = {test_set_size:,} per N)"
+    )
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_bias_distribution_plot(
+    merged: pd.DataFrame,
+    n_values: tuple[int, ...],
+    path: Path,
+) -> None:
+    """Plot signed-error distributions on the common paired analysis rows.
+
+    The boxes summarize ``estimate - truth`` across simulated conditions. The
+    box center is the median; the overlaid diamond is the mean and therefore
+    the bias reported in the metric table.
+    """
+    methods = (("OpenMx", "openmx_est"), ("NPE", "npe_mean"))
+    base_positions = np.arange(len(n_values), dtype=float)
+    offsets = {"OpenMx": -0.19, "NPE": 0.19}
+    paired_counts = {}
+    errors = {
+        parameter: {method: [] for method, _ in methods}
+        for parameter in ACE_PARAM_NAMES
+    }
+
+    for n_index, n_pairs in enumerate(n_values):
+        at_n = merged.loc[merged["N_pairs"] == n_pairs].copy()
+        finite_openmx = np.isfinite(
+            at_n[[f"{parameter}_openmx_est" for parameter in ACE_PARAM_NAMES]]
+        ).all(axis=1)
+        eligible = at_n.loc[finite_openmx].copy()
+        if eligible.empty:
+            raise RuntimeError(f"OpenMx had no usable fits at N={n_pairs}")
+        paired_counts[n_pairs] = len(eligible)
+
+        for parameter in ACE_PARAM_NAMES:
+            truth = eligible[f"{parameter}_true"].to_numpy()
+            for method, suffix in methods:
+                estimate = eligible[f"{parameter}_{suffix}"].to_numpy()
+                errors[parameter][method].append(estimate - truth)
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5.2), squeeze=False)
+    for col, parameter in enumerate(ACE_PARAM_NAMES):
+        axis = axes[0, col]
+        axis.axhline(0.0, color="black", linestyle="--", linewidth=1.2)
+        all_parameter_errors = []
+
+        for method, _ in methods:
+            color = METHOD_COLORS[method]
+            positions = base_positions + offsets[method]
+            values = errors[parameter][method]
+            all_parameter_errors.extend(values)
+            axis.boxplot(
+                values,
+                positions=positions,
+                widths=0.32,
+                patch_artist=True,
+                manage_ticks=False,
+                showfliers=True,
+                boxprops={
+                    "facecolor": color,
+                    "edgecolor": color,
+                    "alpha": 0.35,
+                },
+                medianprops={"color": color, "linewidth": 1.8},
+                whiskerprops={"color": color, "linewidth": 1.1},
+                capprops={"color": color, "linewidth": 1.1},
+                flierprops={
+                    "marker": "o",
+                    "markersize": 2.5,
+                    "markerfacecolor": color,
+                    "markeredgecolor": color,
+                    "alpha": 0.30,
+                },
+            )
+            axis.scatter(
+                positions,
+                [values_at_n.mean() for values_at_n in values],
+                marker="D",
+                s=28,
+                facecolor=color,
+                edgecolor="black",
+                linewidth=0.6,
+                zorder=4,
+            )
+
+        finite_errors = np.concatenate(all_parameter_errors)
+        limit = 1.05 * np.max(np.abs(finite_errors[np.isfinite(finite_errors)]))
+        if limit > 0:
+            axis.set_ylim(-limit, limit)
+        axis.set_xticks(base_positions, [str(n) for n in n_values])
+        axis.set_title(parameter)
+        axis.set_xlabel("Twin-pair sample size N")
+        axis.set_ylabel("Signed error (estimate - truth)")
+        axis.grid(axis="y", alpha=0.25)
+
+    legend_handles = [
+        Patch(
+            facecolor=METHOD_COLORS[method],
+            edgecolor=METHOD_COLORS[method],
+            alpha=0.35,
+            label=method,
+        )
+        for method, _ in methods
+    ]
+    legend_handles.append(
+        Line2D(
+            [0],
+            [0],
+            marker="D",
+            linestyle="none",
+            markerfacecolor="white",
+            markeredgecolor="black",
+            label="Mean bias",
+        )
+    )
+    axes[0, 0].legend(handles=legend_handles, loc="best")
+    count_values = list(paired_counts.values())
+    count_note = (
+        f"{count_values[0]:,} paired usable conditions per N"
+        if len(set(count_values)) == 1
+        else (
+            f"{min(count_values):,}-{max(count_values):,} paired usable "
+            "conditions across N"
+        )
+    )
+    fig.suptitle(
+        "Paired Dirichlet signed-error distributions: OpenMx versus fixed-N NPE\n"
+        f"Box = IQR, center line = median, diamond = mean bias; {count_note}"
     )
     fig.tight_layout()
     fig.savefig(path, dpi=300, bbox_inches="tight")
@@ -1228,7 +1360,12 @@ def main() -> None:
     bias_norms.to_csv(bias_norms_path, index=False)
     posterior_shape.to_csv(posterior_shape_path, index=False)
 
-    save_bias_plot(metrics, n_values, output_dir / "paired_bias_by_n.png")
+    save_bias_distribution_plot(
+        merged, n_values, output_dir / "paired_bias_by_n.png"
+    )
+    save_mean_bias_plot(
+        metrics, n_values, output_dir / "paired_mean_bias_by_n.png"
+    )
     save_mae_plot(metrics, n_values, output_dir / "paired_mae_by_n.png")
     save_performance_plot(metrics, n_values, output_dir / "paired_performance_by_n.png")
     save_mean_uncertainty_plot(
@@ -1283,6 +1420,11 @@ def main() -> None:
                 "sbc_rank_rows": "all NPE evaluations, regardless of OpenMx convergence",
                 "sbc_ecdf_reference_probability": 0.99,
                 "sbc_ecdf_reference_interval": "pointwise binomial under discrete uniform ranks",
+                "bias_distribution_plot": (
+                    "box plots of signed errors on common OpenMx-converged rows; "
+                    "diamonds mark mean bias"
+                ),
+                "mean_bias_plot": "mean signed error with normal-approximation 95% CI",
                 "mean_uncertainty_plot": "OpenMx standard error versus NPE posterior standard deviation",
                 "coverage_interval": "95% Wilson score interval across test datasets",
                 "posterior_shape_summary": "box plots across NPE test datasets; Pearson kurtosis",
