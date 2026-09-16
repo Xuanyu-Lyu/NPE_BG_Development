@@ -1,7 +1,7 @@
-"""Compare N=20,000 Dirichlet NPEs trained with 20k, 50k, and 100k simulations.
+"""STEP 09 -- compare N=20,000 NPEs trained with 20k, 50k, and 100k simulations.
 
-The script reuses the paired test data and OpenMx estimates from STEP 03c but
-writes every output to a separate directory. Existing models and STEP 03c
+The script reuses the paired test data and OpenMx estimates from STEP 08 but
+writes every output to a separate directory. Existing models and STEP 08
 results are never modified.
 """
 
@@ -22,7 +22,9 @@ from ace_model import ACE_PARAM_NAMES, MODELS_DIR, RESULTS_DIR, resolve
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-STEP_03C = runpy.run_path(str(SCRIPT_DIR / "03c_compare_dirichlet_openmx.py"))
+STEP_08 = runpy.run_path(
+    str(SCRIPT_DIR / "08_compare_fixed_n_dirichlet_openmx.py")
+)
 TRAINING_BUDGETS = (20000, 50000, 100000)
 EXTRA_TRAINING_BUDGETS = TRAINING_BUDGETS[1:]
 COMPARISON_METHODS = ("OpenMx",) + tuple(
@@ -58,7 +60,7 @@ def build_training_size_comparison(
     source_metrics = pd.read_csv(source_dir / "paired_metrics.csv")
     if "mean_uncertainty" not in source_metrics.columns:
         source_merged = pd.read_csv(source_dir / "paired_estimates.csv")
-        source_metrics, _ = STEP_03C["metric_tables"](
+        source_metrics, _ = STEP_08["metric_tables"](
             source_merged, (n_pairs,)
         )
     baseline = source_metrics.loc[
@@ -252,7 +254,7 @@ def build_training_size_shape_comparison(
     """Combine posterior-shape summaries for all NPE training budgets."""
     baseline_npe = pd.read_csv(source_dir / "npe_posterior_summaries.csv")
     baseline_npe = baseline_npe.loc[baseline_npe["N_pairs"] == n_pairs]
-    baseline = STEP_03C["posterior_shape_summary"](
+    baseline = STEP_08["posterior_shape_summary"](
         baseline_npe, (n_pairs,)
     )
     baseline["comparison_method"] = training_method(20000)
@@ -260,7 +262,7 @@ def build_training_size_shape_comparison(
 
     frames = [baseline]
     for budget in EXTRA_TRAINING_BUDGETS:
-        enlarged = STEP_03C["posterior_shape_summary"](
+        enlarged = STEP_08["posterior_shape_summary"](
             new_npe[budget], (n_pairs,)
         )
         enlarged["comparison_method"] = training_method(budget)
@@ -427,15 +429,15 @@ def main() -> None:
     metrics_by_budget = {}
     for budget in EXTRA_TRAINING_BUDGETS:
         print(f"Evaluating NPE trained with {budget:,} simulations ...")
-        npe = STEP_03C["evaluate_npe"](
+        npe = STEP_08["evaluate_npe"](
             paired,
             model_dirs[budget],
             n_values,
             args.n_posterior_samples,
             args.seed,
         )
-        merged = STEP_03C["merge_results"](paired, npe, openmx)
-        metrics, differences = STEP_03C["metric_tables"](merged, n_values)
+        merged = STEP_08["merge_results"](paired, npe, openmx)
+        metrics, differences = STEP_08["metric_tables"](merged, n_values)
         npe["training_simulations"] = budget
         merged["training_simulations"] = budget
         metrics["training_simulations"] = budget
@@ -498,14 +500,14 @@ def main() -> None:
     for budget, npe in npe_by_budget.items():
         sbc_dir = output_dir / f"sbc_{budget // 1000}k_training"
         sbc_dir.mkdir(parents=True, exist_ok=True)
-        STEP_03C["save_sbc_rank_plots"](
+        STEP_08["save_sbc_rank_plots"](
             npe,
             n_values,
             args.n_posterior_samples,
             sbc_dir,
             n_bins=args.sbc_bins,
         )
-        STEP_03C["save_sbc_ecdf_plots"](
+        STEP_08["save_sbc_ecdf_plots"](
             npe,
             n_values,
             args.n_posterior_samples,

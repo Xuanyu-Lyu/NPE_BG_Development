@@ -1,4 +1,4 @@
-"""Evaluate the existing fixed-N=1000 Dirichlet NPE at one ACE condition.
+"""STEP 10 -- evaluate the fixed-N=1000 Dirichlet NPE at one ACE condition.
 
 The default experiment generates 500 independent MZ/DZ twin datasets from
 theta=(A, C, E)=(0.4, 0.3, 0.3), evaluates the already-trained NPE for every

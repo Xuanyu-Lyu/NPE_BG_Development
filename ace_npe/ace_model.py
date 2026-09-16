@@ -507,6 +507,16 @@ def load_posterior(model_dir):
         raise FileNotFoundError(
             f"posterior.pkl not found in {model_dir}. Run 02_train_npe.py first."
         )
+    # Fixed-N models saved before the source reorganization reference
+    # ``ace_prior_comparison.ACEPosterior`` in their pickle metadata. Register
+    # the moved utility module under that legacy name at load time so those
+    # existing models remain usable without keeping prior-comparison source in
+    # the main Dirichlet folder.
+    if "ace_prior_comparison" not in sys.modules:
+        from prior_compare import prior_compare_utils
+
+        sys.modules["ace_prior_comparison"] = prior_compare_utils
+
     with open(posterior_path, "rb") as f:
         posterior = pickle.load(f)
 

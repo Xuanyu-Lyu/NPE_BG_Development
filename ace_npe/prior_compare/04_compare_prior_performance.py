@@ -1,4 +1,4 @@
-"""STEP 03b -- compare matched train/test ACE simulation schemes.
+"""PRIOR COMPARE STEP 04 -- compare matched train/test prior schemes.
 
 At every fixed sample size, each NPE is evaluated only on fresh observations
 from its own training distribution.  This gives three directly labeled
@@ -19,9 +19,15 @@ import torch
 from scipy.stats import kurtosis, skew
 from sklearn.metrics import mean_squared_error
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ace_model import ACE_PARAM_NAMES, MODELS_DIR, RESULTS_DIR, load_posterior, resolve
-from ace_prior_comparison import DEFAULT_N_PAIRS, SCHEMES, SCHEME_LABELS, generate_dataset, model_dir_for
+from prior_compare.prior_compare_utils import (
+    DEFAULT_N_PAIRS,
+    SCHEMES,
+    SCHEME_LABELS,
+    generate_dataset,
+    model_dir_for,
+)
 
 
 def evaluate_model(loaded: dict, test_df: pd.DataFrame, n_draws: int):

@@ -1,4 +1,4 @@
-"""Shared utilities for the ACE prior/simulation comparison (scripts 01b--03b)."""
+"""Shared utilities for the isolated ``prior_compare`` pipeline."""
 
 from __future__ import annotations
 

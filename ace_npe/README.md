@@ -46,12 +46,21 @@ jupyter lab 06_analysis.ipynb
 python 05_simulate_posterior_recovery.py --model_dir se_proxy \
        --n_conditions 24 --n_reps 200 --output npe_se_montecarlo.csv
 jupyter lab 07_se_calibration.ipynb
+
+# 08 — paired OpenMx vs fixed-N Dirichlet NPE comparison
+python 08_compare_fixed_n_dirichlet_openmx.py
+
+# 09 — N=20,000 comparison across NPE training-set sizes
+python 09_compare_n20000_training_sizes.py
+
+# 10 — 500 repeated datasets at fixed N=1000 and theta=(0.4,0.3,0.3)
+python 10_evaluate_fixed_theta_n1000.py
 ```
 
 `demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
 it is not a pipeline step.
 
-### Optional 01b--03b prior-distribution comparison
+### Optional multi-prior comparison
 
 This archived comparison contrasts the former independent uniforms with two fixed-sum
 generators. The `normalized_uniform` arm intentionally draws three iid
@@ -61,19 +70,19 @@ distribution.
 
 ```bash
 # 18 datasets: 3 schemes x 6 fixed N values -> data/prior_comparison/
-python 01b_generate_prior_comparison_data.py --n_samples 50000
+python prior_compare/01_generate_prior_data.py --n_samples 50000
 
 # Validate the Dirichlet draws and save a ternary density figure
-python 01c_validate_dirichlet_prior.py \
+python prior_compare/02_validate_dirichlet_prior.py \
        --data prior_comparison/ace_dirichlet_N100.csv
 
 # 18 separately trained fixed-N models -> results/models/prior_comparison/
 # N is deliberately not an input feature.
-python 02b_train_prior_comparison.py --epochs 500 --device cpu
+python prior_compare/03_train_prior_models.py --epochs 500 --device cpu
 
 # Compare each model only with OOS data drawn from its matching distribution
 # -> results/prior_comparison/
-python 03b_compare_prior_performance.py --n_samples 500 \
+python prior_compare/04_compare_prior_performance.py --n_samples 500 \
        --n_posterior_samples 1000
 ```
 
@@ -81,8 +90,9 @@ The comparison selected the Dirichlet arm for the formal 01→02 pipeline. The
 fixed-sum models learn two additive-log-ratio coordinates and reconstruct
 the third component, so every posterior draw is positive and sums exactly to
 one. Separate models are trained at `N = 50, 100, 500, 1000, 5000, 20000`; none
-receives `N_pairs`, `log_N_pairs`, or `se_proxy` as an input feature. STEP 03b
-tests each model only on a fresh OOS set generated from that model's matching
+receives `N_pairs`, `log_N_pairs`, or `se_proxy` as an input feature. Prior
+comparison STEP 04 tests each model only on a fresh OOS set generated from
+that model's matching
 prior scheme. For every test dataset and ACE parameter,
 `matched_predictions.csv` records posterior mean, sample SD, minimum, maximum,
 median, 2.5%/97.5% quantiles, skewness, Fisher excess kurtosis, and the rank and
@@ -91,21 +101,21 @@ are not retained.
 
 ### Paired Dirichlet OpenMx--NPE comparison
 
-STEP 03c uses only `Dirichlet(1,1,1)` ACE parameters. For every condition and
+STEP 08 uses only `Dirichlet(1,1,1)` ACE parameters. For every condition and
 sample size, it simulates one MZ and one DZ covariance matrix, fits OpenMx to
 those matrices, and evaluates the matching fixed-N NPE on their standard
 four-feature reduction. Both estimators' metrics use the same rows on which
 OpenMx converged.
 
 ```bash
-# Only needed once because N=2000 was not in the original 01b--03b grid
-python 01b_generate_prior_comparison_data.py --schemes dirichlet \
+# Only needed once because N=2000 was not in the original prior-comparison grid
+python prior_compare/01_generate_prior_data.py --schemes dirichlet \
        --n_pairs 2000 --skip_manifest
-python 02b_train_prior_comparison.py --schemes dirichlet --n_pairs 2000
+python prior_compare/03_train_prior_models.py --schemes dirichlet --n_pairs 2000
 
 # 200 shared conditions at N=50,100,500,1000,2000,5000,20000
 # -> results/dirichlet_openmx_comparison/
-python 03c_compare_dirichlet_openmx.py
+python 08_compare_fixed_n_dirichlet_openmx.py
 ```
 
 Use `--reuse_data` to preserve the paired simulated data on a repeat run and
@@ -119,21 +129,24 @@ together with an unchanged paired dataset.
 ```
 ace_npe/
 ├── ace_model.py                      shared library — imported by everything
-├── ace_prior_comparison.py           shared transforms/priors for 01b--03b
 ├── 01_generate_training_data.py      simulate (θ, x) training pairs
-├── 01b_generate_prior_comparison_data.py  simulate the three prior arms
-├── 01c_validate_dirichlet_prior.py    ternary + moment checks for Dirichlet draws
 ├── 02_train_npe.py                   train the normalizing flow
-├── 02b_train_prior_comparison.py     train one NPE per prior arm
 ├── 03_evaluate_oos_predictions.py    calibration / coverage on fresh draws
-├── 03b_compare_prior_performance.py  matched-prior comparison by fixed N
-├── 03c_compare_dirichlet_openmx.py    paired Dirichlet OpenMx vs fixed-N NPE
-├── 03c_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 03c
 ├── 04_fit_openmx_reference.R         OpenMx MLE reference + test conditions
 ├── 05_simulate_posterior_recovery.py NPE fits on those same conditions
 ├── 06_analysis.ipynb                 OpenMx vs NPE comparison
 ├── 07_se_calibration.ipynb           is the reported SE correct?
+├── 08_compare_fixed_n_dirichlet_openmx.py  paired fixed-N comparison
+├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
+├── 09_compare_n20000_training_sizes.py     20k/50k/100k training comparison
+├── 10_evaluate_fixed_theta_n1000.py  fixed-theta repeated-data evaluation
 ├── demo_single_fit.ipynb             worked single-observation example
+├── prior_compare/                    isolated optional multi-prior pipeline
+│   ├── 01_generate_prior_data.py
+│   ├── 02_validate_dirichlet_prior.py
+│   ├── 03_train_prior_models.py
+│   ├── 04_compare_prior_performance.py
+│   └── prior_compare_utils.py
 ├── data/                             inputs and shared test conditions
 │   ├── ace_training_data*.csv
 │   └── ace_test_conditions.csv
@@ -151,9 +164,10 @@ ace_npe/
 Python cannot import a module whose name begins with a digit —
 `from 02_train_npe import ...` is a syntax error. So **no numbered script is
 ever imported by another**. General pipeline utilities live in `ace_model.py`;
-the isolated 01b--03b experiment uses `ace_prior_comparison.py` for its
-simulation schemes, log-ratio transform, and posterior wrapper. Numbered
-scripts remain pure entry points.
+the isolated experiment uses `prior_compare/prior_compare_utils.py` for its
+simulation schemes, log-ratio transform, and posterior wrapper. The model
+loader maps the former module name to this new location so existing pickles
+remain usable. Numbered scripts remain entry points.
 
 ---
 

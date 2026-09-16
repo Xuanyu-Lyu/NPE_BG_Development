@@ -1,4 +1,4 @@
-"""STEP 01b -- simulate ACE training data under three parameter distributions.
+"""PRIOR COMPARE STEP 01 -- simulate data under three parameter distributions.
 
 For every scheme, a separate dataset is written for each fixed N.  The default
 therefore creates 3 x 6 files for N in [50, 100, 500, 1000, 5000, 20000].
@@ -11,9 +11,9 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ace_model import DATA_DIR, resolve
-from ace_prior_comparison import (
+from prior_compare.prior_compare_utils import (
     DEFAULT_N_PAIRS,
     SCHEMES,
     SCHEME_LABELS,
@@ -85,7 +85,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 72)
-    print("STEP 01b -- ACE PRIOR/SIMULATION COMPARISON DATA")
+    print("PRIOR COMPARE STEP 01 -- GENERATE TRAINING DATA")
     print("=" * 72)
     print(f"Samples per scheme: {args.n_samples}")
     print(f"Fixed-N datasets:   {list(n_options)}")

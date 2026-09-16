@@ -1,11 +1,11 @@
-"""STEP 03c -- paired OpenMx versus fixed-N Dirichlet NPE comparison.
+"""STEP 08 -- paired OpenMx versus fixed-N Dirichlet NPE comparison.
 
 For each Dirichlet ACE condition and sample size, this script simulates one MZ
 and one DZ covariance matrix. OpenMx and the matching fixed-N NPE receive those
 exact same covariance matrices. Metrics for both methods use the same subset of
 rows on which OpenMx converged, so differences are genuinely paired.
 
-The script calls ``03c_fit_openmx_paired_dirichlet.R`` as its OpenMx backend.
+The script calls ``08_fit_openmx_paired_dirichlet.R`` as its OpenMx backend.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from scipy.stats import binom, kurtosis, skew
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ace_model import ACE_PARAM_NAMES, COV_FEATURE_NAMES, MODELS_DIR, RESULTS_DIR, load_posterior, resolve
-from ace_prior_comparison import model_dir_for
+from prior_compare.prior_compare_utils import model_dir_for
 
 
 DEFAULT_N_PAIRS = (50, 100, 500, 1000, 2000, 5000, 20000)
@@ -67,9 +67,9 @@ def validate_models(models_dir: Path, n_values: tuple[int, ...]) -> None:
             missing.append(n_pairs)
     if missing:
         commands = "\n".join(
-            "  python 01b_generate_prior_comparison_data.py --schemes dirichlet "
+            "  python prior_compare/01_generate_prior_data.py --schemes dirichlet "
             f"--n_pairs {n} --skip_manifest\n"
-            "  python 02b_train_prior_comparison.py --schemes dirichlet "
+            "  python prior_compare/03_train_prior_models.py --schemes dirichlet "
             f"--n_pairs {n}"
             for n in missing
         )
@@ -1123,7 +1123,7 @@ def main() -> None:
     parser.add_argument("--rscript", default="Rscript")
     parser.add_argument(
         "--openmx_backend",
-        default=str(Path(__file__).with_name("03c_fit_openmx_paired_dirichlet.R")),
+        default=str(Path(__file__).with_name("08_fit_openmx_paired_dirichlet.R")),
     )
     parser.add_argument(
         "--reuse_data", action="store_true",

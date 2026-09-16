@@ -1,4 +1,4 @@
-"""STEP 01c -- validate a simulated Dirichlet ACE dataset.
+"""PRIOR COMPARE STEP 02 -- validate a simulated Dirichlet ACE dataset.
 
 The script checks the simplex constraint and compares empirical marginal
 moments with their Dirichlet values. It also saves a ternary density plot.
@@ -19,7 +19,7 @@ import pandas as pd
 from matplotlib.patches import Polygon
 from scipy.stats import beta, kstest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ace_model import ACE_PARAM_NAMES, DATA_DIR, RESULTS_DIR, resolve
 
 

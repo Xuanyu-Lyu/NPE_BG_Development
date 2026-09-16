@@ -1,4 +1,4 @@
-"""STEP 02b -- train one ACE NPE for each simulation scheme and fixed N.
+"""PRIOR COMPARE STEP 03 -- train one NPE per prior scheme and fixed N.
 
 The fixed-sum arms are trained in two additive-log-ratio coordinates,
 ``log(A/E)`` and ``log(C/E)``.  Saved posteriors transparently convert samples
@@ -29,9 +29,9 @@ from sbi.inference import SNPE
 from sbi.neural_nets import posterior_nn
 from sbi.utils import BoxUniform
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ace_model import ACE_PARAM_NAMES, COV_FEATURE_NAMES, DATA_DIR, MODELS_DIR, VAR_REDUCTION, map_from_samples, resolve
-from ace_prior_comparison import (
+from prior_compare.prior_compare_utils import (
     ACEPosterior,
     FIXED_SUM_SCHEMES,
     SCHEMES,
@@ -48,7 +48,9 @@ warnings.filterwarnings("ignore")
 def load_manifest(data_dir: Path) -> dict:
     path = data_dir / "simulation_manifest.json"
     if not path.exists():
-        raise FileNotFoundError(f"Missing {path}; run 01b_generate_prior_comparison_data.py first")
+        raise FileNotFoundError(
+            f"Missing {path}; run prior_compare/01_generate_prior_data.py first"
+        )
     with open(path) as f:
         return json.load(f)
 
