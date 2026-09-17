@@ -16,12 +16,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd /pl/active/IBG/collab/NPE_Fei_Xy/NPE_BG_Development
 
-module purge
-module load miniforge
-CONDA_ENV="${CONDA_ENV:-/projects/xuly4739/general_env}"
-conda activate "$CONDA_ENV"
+module load anaconda
+conda activate npe-bg
 
-python -u 10b_fixed_theta_npe_ensemble.py aggregate
+python --version
+python devtools/check_environment.py
+
+python -u ace_npe/10b_fixed_theta_npe_ensemble.py aggregate
