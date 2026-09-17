@@ -62,6 +62,8 @@ DEFAULT_POSTERIOR_DRAWS = 2_000
 DEFAULT_THETA = (0.4, 0.3, 0.3)
 DEFAULT_ALPHA = (1.0, 1.0, 1.0)
 DEFAULT_SEED = 202_609_16
+RMS_POSTERIOR_SE_COLUMN = "sqrt(mean(posterior_var))"
+RMS_SE_RATIO_COLUMN = "sqrt(mean(posterior_var))/empirical_SE"
 
 
 def integer_seed(base_seed: int, replicate: int, stream: int) -> int:
@@ -278,13 +280,15 @@ def evaluate_posterior(
     raw = pd.DataFrame(rows)
     summary_rows = []
     for parameter in ACE_PARAM_NAMES:
+        posterior_sds = raw[f"{parameter}_posterior_sd"]
         summary_rows.append(
             {
                 "replicate": replicate,
                 "parameter": parameter,
                 "n_test_simulations": len(raw),
                 "SE(mean(theta))": raw[f"{parameter}_posterior_mean"].std(ddof=1),
-                "mean(posterior_SE)": raw[f"{parameter}_posterior_sd"].mean(),
+                "mean(posterior_SE)": posterior_sds.mean(),
+                RMS_POSTERIOR_SE_COLUMN: np.sqrt(np.mean(np.square(posterior_sds))),
                 "mean(posterior_mean)": raw[f"{parameter}_posterior_mean"].mean(),
                 "bias(posterior_mean)": (
                     raw[f"{parameter}_posterior_mean"].mean()
@@ -389,6 +393,10 @@ def run_one(args) -> None:
                     "mean posterior sample SD (ddof=1) over fixed-theta "
                     "test datasets"
                 ),
+                RMS_POSTERIOR_SE_COLUMN: (
+                    "square root of the mean posterior sample variance over "
+                    "fixed-theta test datasets; primary calibration metric"
+                ),
             },
         }
         with open(work_dir / "config.json", "w") as handle:
@@ -420,7 +428,7 @@ def save_ensemble_plot(
         axis = axes[0, column]
         selected = summary.loc[summary["parameter"] == parameter]
         x = selected["SE(mean(theta))"].to_numpy()
-        y = selected["mean(posterior_SE)"].to_numpy()
+        y = selected[RMS_POSTERIOR_SE_COLUMN].to_numpy()
         maximum = 1.10 * max(float(x.max()), float(y.max()))
         axis.scatter(
             x,
@@ -439,13 +447,14 @@ def save_ensemble_plot(
         axis.set_xlabel(
             f"SE of posterior means across {n_test_simulations} datasets"
         )
-        axis.set_ylabel("Mean posterior SE")
+        axis.set_ylabel("sqrt(mean posterior variance)")
         axis.grid(alpha=0.22)
 
     fig.suptitle(
         f"{summary['replicate'].nunique()} Independently trained NPE "
         f"with N pairs={n_pairs}\n"
-        "Each point is one NPE; dashed line: posterior SE = empirical SE"
+        "Each point is one NPE; dashed line: "
+        "sqrt(mean posterior variance) = empirical SE"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.91))
     fig.savefig(path, dpi=300, bbox_inches="tight")
@@ -461,7 +470,7 @@ def save_se_ratio_boxplot(
     values_by_parameter = [
         summary.loc[
             summary["parameter"] == parameter,
-            "posterior_SE/empirical_SE",
+            RMS_SE_RATIO_COLUMN,
         ].to_numpy()
         for parameter in ACE_PARAM_NAMES
     ]
@@ -519,11 +528,11 @@ def save_se_ratio_boxplot(
     ]
     axis.set_xticks(range(1, len(ACE_PARAM_NAMES) + 1), tick_labels)
     axis.set_xlabel("ACE parameter")
-    axis.set_ylabel("Mean posterior SE / empirical SE")
+    axis.set_ylabel("sqrt(mean posterior variance) / empirical SE")
     axis.set_title(
         f"{summary['replicate'].nunique()} Independently trained NPE "
         f"with N pairs={n_pairs}\n"
-        "Posterior-to-empirical SE ratio across models"
+        "RMS posterior-to-empirical SE ratio across models"
     )
     axis.grid(axis="y", alpha=0.22)
     axis.legend(frameon=False, loc="best")
@@ -545,6 +554,29 @@ def aggregate(args) -> None:
         frame = pd.read_csv(summary_path)
         if set(frame["parameter"]) != set(ACE_PARAM_NAMES) or len(frame) != 3:
             raise ValueError(f"Malformed replicate summary: {summary_path}")
+        # Runs completed before the RMS-SE metric was introduced already have
+        # every per-dataset posterior SD in their raw results. Reconstruct the
+        # metric here so aggregation never requires retraining those NPEs.
+        if RMS_POSTERIOR_SE_COLUMN not in frame:
+            raw_path = replicate_dir / "fixed_theta_posterior_results.csv"
+            if not raw_path.exists():
+                raise FileNotFoundError(
+                    f"Cannot reconstruct {RMS_POSTERIOR_SE_COLUMN}: "
+                    f"missing {raw_path}"
+                )
+            raw = pd.read_csv(raw_path)
+            frame[RMS_POSTERIOR_SE_COLUMN] = np.nan
+            for parameter in ACE_PARAM_NAMES:
+                sd_column = f"{parameter}_posterior_sd"
+                if sd_column not in raw:
+                    raise ValueError(f"Missing {sd_column} in {raw_path}")
+                posterior_sds = raw[sd_column].to_numpy(dtype=float)
+                if len(posterior_sds) < 2 or not np.isfinite(posterior_sds).all():
+                    raise ValueError(f"Invalid posterior SD values in {raw_path}")
+                frame.loc[
+                    frame["parameter"] == parameter,
+                    RMS_POSTERIOR_SE_COLUMN,
+                ] = np.sqrt(np.mean(np.square(posterior_sds)))
         frames.append(frame)
     if missing:
         raise RuntimeError(
@@ -554,8 +586,8 @@ def aggregate(args) -> None:
     summary = pd.concat(frames, ignore_index=True)
     if (summary["SE(mean(theta))"] <= 0).any():
         raise ValueError("Empirical SE must be positive to calculate SE ratios")
-    summary["posterior_SE/empirical_SE"] = (
-        summary["mean(posterior_SE)"] / summary["SE(mean(theta))"]
+    summary[RMS_SE_RATIO_COLUMN] = (
+        summary[RMS_POSTERIOR_SE_COLUMN] / summary["SE(mean(theta))"]
     )
     long_path = output_root / "ensemble_summary_long.csv"
     summary.to_csv(long_path, index=False)
@@ -565,7 +597,8 @@ def aggregate(args) -> None:
         values=[
             "SE(mean(theta))",
             "mean(posterior_SE)",
-            "posterior_SE/empirical_SE",
+            RMS_POSTERIOR_SE_COLUMN,
+            RMS_SE_RATIO_COLUMN,
         ],
     )
     wide = wide.swaplevel(0, 1, axis=1).reindex(columns=ACE_PARAM_NAMES, level=0)
@@ -573,7 +606,7 @@ def aggregate(args) -> None:
     wide.reset_index().to_csv(output_root / "ensemble_summary_table.csv", index=False)
 
     ratio_summary = (
-        summary.groupby("parameter", sort=False)["posterior_SE/empirical_SE"]
+        summary.groupby("parameter", sort=False)[RMS_SE_RATIO_COLUMN]
         .agg(
             n_models="count",
             mean="mean",
