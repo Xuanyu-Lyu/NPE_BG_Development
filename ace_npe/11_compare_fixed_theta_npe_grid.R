@@ -554,9 +554,10 @@ ratio_plot_path <- file.path(
   args$output_dir, "fixed_theta_npe_grid_sd_ratio_boxplot.png"
 )
 all_ratios <- paired$npe_sd_over_grid_sd
-ratio_limits <- padded_range(c(
-  quantile(all_ratios, c(0.001, 0.999), na.rm = TRUE), 1
-))
+ratio_limits <- range(all_ratios, finite = TRUE)
+if (diff(ratio_limits) == 0) {
+  ratio_limits <- ratio_limits + c(-1, 1) * max(abs(ratio_limits), 1) * 0.01
+}
 png(ratio_plot_path, width = 3200, height = 1200, res = 200)
 old_par <- par(no.readonly = TRUE)
 par(mfrow = c(1, 3), mar = c(4.8, 5.4, 5.3, 1.2),
@@ -572,9 +573,11 @@ for (parameter in PARAMETERS) {
   ]
   boxplot(
     selected$npe_sd_over_grid_sd,
-    outline = FALSE, ylim = ratio_limits, xaxt = "n",
+    outline = TRUE, ylim = ratio_limits, yaxs = "i", xaxt = "n",
     col = adjustcolor(COLORS[[parameter]], alpha.f = 0.28),
     border = COLORS[[parameter]],
+    outpch = 16, outcex = 0.42,
+    outcol = adjustcolor(COLORS[[parameter]], alpha.f = 0.55),
     ylab = "NPE posterior SD / grid posterior SD",
     main = sprintf(
       "%s\nNPE calibration: %.3f [%.3f, %.3f]\nGrid calibration: %.3f",
@@ -636,8 +639,8 @@ summary_text <- c(
   "                    SD(posterior means across shared datasets).",
   "NPE annotations report the median [IQR] of the model-wise ratios.",
   "Grid annotations report its single ratio over the shared datasets.",
-  "The ratio-plot display range uses the 0.1%--99.9% paired-ratio range;",
-  "all values, including any outside that range, are retained in the CSV."
+  "The ratio plot uses the full observed range across A, C, and E and",
+  "shows all standard boxplot outliers."
 )
 writeLines(summary_text, file.path(args$output_dir, "run_summary.txt"))
 
