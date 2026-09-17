@@ -55,6 +55,12 @@ python 09_compare_n20000_training_sizes.py
 
 # 10 — 500 repeated datasets per N at fixed theta=(0.4,0.3,0.3)
 python 10_evaluate_fixed_theta.py
+
+# 11 — paired fixed-theta comparison of the 100 NPEs with a grid posterior
+Rscript 11_compare_fixed_theta_npe_grid.R
+
+# On CU Boulder Alpine, submit STEP 11 from the repository root:
+sbatch ace_npe/11_compare_fixed_theta_npe_grid.sh
 ```
 
 `demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
@@ -140,6 +146,9 @@ ace_npe/
 ├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
 ├── 09_compare_n20000_training_sizes.py     20k/50k/100k training comparison
 ├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
+├── 10b_fixed_theta_npe_ensemble.py   100 independently trained NPEs at N=1000
+├── 11_compare_fixed_theta_npe_grid.R paired NPE vs grid-posterior diagnostics
+├── 11_compare_fixed_theta_npe_grid.sh Alpine submission script for STEP 11
 ├── demo_single_fit.ipynb             worked single-observation example
 ├── prior_compare/                    isolated optional multi-prior pipeline
 │   ├── 01_generate_prior_data.py
