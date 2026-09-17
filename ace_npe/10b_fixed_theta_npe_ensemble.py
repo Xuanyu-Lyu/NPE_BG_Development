@@ -1,0 +1,584 @@
+"""STEP 10b -- train and evaluate an ensemble of fixed-N NPEs.
+
+The default experiment trains 100 independent Dirichlet NPEs.  Every NPE uses
+100,000 simulations at N=1,000 and is evaluated on 100 datasets generated at
+(A, C, E)=(0.4, 0.3, 0.3), with 2,000 posterior draws per dataset.
+
+This file is designed for a Slurm array.  One array task runs one replicate::
+
+    python 10b_fixed_theta_npe_ensemble.py run-one --replicate 1
+
+After all array tasks finish, aggregate their summaries and make the requested
+three-panel scatter plot::
+
+    python 10b_fixed_theta_npe_ensemble.py aggregate
+
+Training covariance statistics are simulated directly from their exact
+Wishart distribution.  This is distributionally identical to generating all
+individual Gaussian twin observations and calling ``np.cov(..., ddof=1)``,
+but avoids constructing 200 million observations per NPE.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pickle
+import shutil
+import sys
+import time
+from pathlib import Path
+
+import joblib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from sbi.inference import SNPE
+from sbi.neural_nets import posterior_nn
+from sklearn.preprocessing import StandardScaler
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ace_model import (  # noqa: E402
+    ACE_PARAM_NAMES,
+    COV_FEATURE_NAMES,
+    RESULTS_DIR,
+    VAR_REDUCTION,
+    DirichletACEPosterior,
+    DirichletALRPrior,
+    ace_to_alr,
+    resolve,
+)
+
+
+DEFAULT_OUTPUT_DIR = "fixed_theta_npe_ensemble"
+DEFAULT_REPLICATES = 100
+DEFAULT_TRAINING_SIMULATIONS = 100_000
+DEFAULT_N_PAIRS = 1_000
+DEFAULT_TEST_SIMULATIONS = 100
+DEFAULT_POSTERIOR_DRAWS = 2_000
+DEFAULT_THETA = (0.4, 0.3, 0.3)
+DEFAULT_ALPHA = (1.0, 1.0, 1.0)
+DEFAULT_SEED = 202_609_16
+
+
+def integer_seed(base_seed: int, replicate: int, stream: int) -> int:
+    """Return a reproducible uint32 seed for one experiment stream."""
+    return int(
+        np.random.SeedSequence([base_seed, replicate, stream]).generate_state(1)[0]
+    )
+
+
+def simulate_covariance_features(
+    ace: np.ndarray,
+    n_pairs: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Simulate exact Gaussian sample-covariance summaries in vectorized form.
+
+    For ``n_pairs`` bivariate normal observations, the unbiased sample
+    covariance satisfies ``(n_pairs - 1) S ~ Wishart_2(n_pairs - 1, Sigma)``.
+    A vectorized 2-D Bartlett decomposition generates that distribution
+    without storing the individual twin observations.
+    """
+    ace = np.asarray(ace, dtype=np.float64)
+    if ace.ndim != 2 or ace.shape[1] != 3:
+        raise ValueError("ace must have shape (n_simulations, 3)")
+    if n_pairs < 3:
+        raise ValueError("n_pairs must be at least 3")
+    if np.any(ace <= 0):
+        raise ValueError("A, C, and E must all be positive")
+
+    variance = ace.sum(axis=1)
+    mz_covariance = ace[:, 0] + ace[:, 1]
+    dz_covariance = 0.5 * ace[:, 0] + ace[:, 1]
+    degrees_freedom = n_pairs - 1
+
+    def draw_one_group(off_diagonal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        # Cholesky factor of [[V, cov], [cov, V]] for every simulation.
+        l00 = np.sqrt(variance)
+        l10 = off_diagonal / l00
+        remainder = variance - np.square(l10)
+        if np.any(remainder <= 0):
+            raise ValueError("Encountered a non-positive-definite ACE covariance")
+        l11 = np.sqrt(remainder)
+
+        # Bartlett factor A = [[sqrt(chi2_df), 0],
+        #                       [N(0,1), sqrt(chi2_(df-1))]].
+        a00 = np.sqrt(rng.chisquare(degrees_freedom, size=len(ace)))
+        a10 = rng.standard_normal(len(ace))
+        a11 = np.sqrt(rng.chisquare(degrees_freedom - 1, size=len(ace)))
+
+        # B=L@A and W=B@B.T.  Only mean(diag(W)) and W[0,1] are needed.
+        b00 = l00 * a00
+        b10 = l10 * a00 + l11 * a10
+        b11 = l11 * a11
+        sample_var = (np.square(b00) + np.square(b10) + np.square(b11)) / (
+            2.0 * degrees_freedom
+        )
+        sample_cov = (b00 * b10) / degrees_freedom
+        return sample_var, sample_cov
+
+    mz_var, mz_cov = draw_one_group(mz_covariance)
+    dz_var, dz_cov = draw_one_group(dz_covariance)
+    return np.column_stack((mz_var, mz_cov, dz_var, dz_cov)).astype(np.float32)
+
+
+def make_training_data(args, replicate: int) -> tuple[np.ndarray, np.ndarray, int]:
+    """Generate one prior-predictive training corpus."""
+    data_replicate = 0 if args.training_data_mode == "shared" else replicate
+    seed = integer_seed(args.seed, data_replicate, 1)
+    rng = np.random.default_rng(seed)
+    alpha = np.asarray(args.dirichlet_alpha, dtype=np.float64)
+    ace = rng.dirichlet(alpha, size=args.n_training_simulations)
+    ace *= args.total_variance
+    features = simulate_covariance_features(ace, args.n_pairs, rng)
+    return features, ace.astype(np.float32), seed
+
+
+def make_test_data(args, replicate: int) -> tuple[np.ndarray, np.ndarray, int]:
+    """Generate the fixed-theta evaluation datasets."""
+    test_replicate = 0 if args.test_set_mode == "shared" else replicate
+    seed = integer_seed(args.seed, test_replicate, 2)
+    rng = np.random.default_rng(seed)
+    theta = np.asarray(args.theta, dtype=np.float64)
+    ace = np.repeat(theta[None, :], args.n_test_simulations, axis=0)
+    return simulate_covariance_features(ace, args.n_pairs, rng), ace, seed
+
+
+def resolve_device(requested: str) -> torch.device:
+    if requested != "auto":
+        device = torch.device(requested)
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("--device cuda was requested, but CUDA is unavailable")
+    return device
+
+
+def train_posterior(
+    args,
+    replicate: int,
+    features: np.ndarray,
+    ace: np.ndarray,
+    output_dir: Path,
+):
+    """Fit and save one fixed-N Dirichlet NPE."""
+    split_seed = integer_seed(args.seed, replicate, 3)
+    training_seed = integer_seed(args.seed, replicate, 4)
+    rng = np.random.default_rng(split_seed)
+    indices = rng.permutation(len(features))
+    n_validation = max(1, int(round(args.validation_fraction * len(features))))
+    n_training = len(features) - n_validation
+    train_indices = indices[:n_training]
+    validation_indices = indices[n_training:]
+
+    scaler = StandardScaler().fit(features[train_indices])
+    x_training = scaler.transform(features[train_indices]).astype(np.float32)
+    x_validation = scaler.transform(features[validation_indices]).astype(np.float32)
+    theta = ace_to_alr(ace)
+    theta_all = np.vstack((theta[train_indices], theta[validation_indices]))
+    x_all = np.vstack((x_training, x_validation))
+    joblib.dump(scaler, output_dir / "feature_scaler.pkl")
+
+    device = resolve_device(args.device)
+    torch.manual_seed(training_seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(training_seed)
+
+    prior = DirichletALRPrior(args.dirichlet_alpha, device=str(device))
+    density_builder = posterior_nn(
+        model=args.flow_type,
+        embedding_net=nn.Identity(),
+        hidden_features=args.flow_hidden,
+        num_transforms=args.flow_transforms,
+        z_score_theta="independent",
+        z_score_x="independent",
+    )
+    inference = SNPE(
+        prior=prior,
+        density_estimator=density_builder,
+        device=str(device),
+    )
+    inference.append_simulations(
+        theta=torch.as_tensor(theta_all, dtype=torch.float32),
+        x=torch.as_tensor(x_all, dtype=torch.float32),
+    )
+    estimator = inference.train(
+        training_batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        max_num_epochs=args.epochs,
+        stop_after_epochs=args.stop_after_epochs,
+        validation_fraction=n_validation / len(features),
+        show_train_summary=True,
+    )
+    latent_posterior = inference.build_posterior(estimator)
+    latent_posterior.to("cpu")
+    posterior = DirichletACEPosterior(
+        latent_posterior, total_variance=args.total_variance
+    )
+
+    torch.save(
+        {
+            "density_estimator_state_dict": estimator.state_dict(),
+            "prior_type": "exact_dirichlet_ALR",
+            "dirichlet_alpha": list(args.dirichlet_alpha),
+            "total_variance": args.total_variance,
+            "theta_parameterization": "ALR: log(A/E), log(C/E); E reconstructed",
+        },
+        output_dir / "density_estimator.pt",
+    )
+    with open(output_dir / "posterior.pkl", "wb") as handle:
+        pickle.dump(posterior, handle)
+    return posterior, scaler, device, n_training, n_validation, training_seed
+
+
+def evaluate_posterior(
+    args,
+    replicate: int,
+    posterior,
+    scaler: StandardScaler,
+    raw_features: np.ndarray,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Evaluate one NPE and calculate the requested A/C/E coordinates."""
+    scaled_features = scaler.transform(raw_features).astype(np.float32)
+    posterior_seed = integer_seed(args.seed, replicate, 5)
+    torch.manual_seed(posterior_seed)
+    rows = []
+    for test_index, (raw_row, scaled_row) in enumerate(
+        zip(raw_features, scaled_features), start=1
+    ):
+        x = torch.as_tensor(scaled_row, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            samples = posterior.sample(
+                (args.n_posterior_draws,), x=x, show_progress_bars=False
+            )
+        draws = samples.cpu().numpy()
+        row = {
+            "replicate": replicate,
+            "test_simulation": test_index,
+            **dict(zip(COV_FEATURE_NAMES, raw_row.astype(float))),
+        }
+        for parameter_index, parameter in enumerate(ACE_PARAM_NAMES):
+            row[f"true_{parameter}"] = float(args.theta[parameter_index])
+            row[f"{parameter}_posterior_mean"] = float(
+                draws[:, parameter_index].mean()
+            )
+            row[f"{parameter}_posterior_sd"] = float(
+                draws[:, parameter_index].std(ddof=1)
+            )
+        rows.append(row)
+
+    raw = pd.DataFrame(rows)
+    summary_rows = []
+    for parameter in ACE_PARAM_NAMES:
+        summary_rows.append(
+            {
+                "replicate": replicate,
+                "parameter": parameter,
+                "n_test_simulations": len(raw),
+                "SE(mean(theta))": raw[f"{parameter}_posterior_mean"].std(ddof=1),
+                "mean(posterior_SE)": raw[f"{parameter}_posterior_sd"].mean(),
+                "mean(posterior_mean)": raw[f"{parameter}_posterior_mean"].mean(),
+                "bias(posterior_mean)": (
+                    raw[f"{parameter}_posterior_mean"].mean()
+                    - float(args.theta[ACE_PARAM_NAMES.index(parameter)])
+                ),
+            }
+        )
+    return raw, pd.DataFrame(summary_rows)
+
+
+def run_one(args) -> None:
+    replicate = args.replicate
+    output_root = resolve(args.output_dir, RESULTS_DIR)
+    output_root.mkdir(parents=True, exist_ok=True)
+    final_dir = output_root / f"replicate_{replicate:03d}"
+    complete_path = final_dir / "COMPLETE"
+    if complete_path.exists() and not args.force:
+        print(f"Replicate {replicate} is already complete: {final_dir}")
+        return
+    if final_dir.exists():
+        if not args.force:
+            raise FileExistsError(
+                f"Incomplete output directory already exists: {final_dir}. "
+                "Inspect it, then rerun with --force to replace it."
+            )
+        shutil.rmtree(final_dir)
+
+    work_dir = output_root / f".replicate_{replicate:03d}.tmp.{os.getpid()}"
+    work_dir.mkdir(parents=False, exist_ok=False)
+    start = time.perf_counter()
+    try:
+        print(f"Replicate {replicate}: generating training simulations ...")
+        training_features, training_ace, training_data_seed = make_training_data(
+            args, replicate
+        )
+        print(
+            f"Replicate {replicate}: training on "
+            f"{args.n_training_simulations:,} simulations ..."
+        )
+        posterior, scaler, device, n_training, n_validation, training_seed = (
+            train_posterior(
+                args,
+                replicate,
+                training_features,
+                training_ace,
+                work_dir,
+            )
+        )
+        # Release the largest arrays before posterior evaluation.
+        del training_features, training_ace
+
+        print(f"Replicate {replicate}: generating and evaluating fixed-theta data ...")
+        test_features, _, test_data_seed = make_test_data(args, replicate)
+        raw, summary = evaluate_posterior(
+            args, replicate, posterior, scaler, test_features
+        )
+        raw.to_csv(work_dir / "fixed_theta_posterior_results.csv", index=False)
+        summary.to_csv(work_dir / "fixed_theta_summary.csv", index=False)
+
+        elapsed_seconds = time.perf_counter() - start
+        config = {
+            "experiment": "fixed_theta_npe_ensemble",
+            "model_type": "NPE_fixed_theta_ensemble",
+            "simulation_scheme": "dirichlet",
+            "replicate": replicate,
+            "n_replicates_planned": args.n_replicates,
+            "n_training_simulations_total": args.n_training_simulations,
+            "training_rows": n_training,
+            "validation_rows": n_validation,
+            "training_data_mode": args.training_data_mode,
+            "test_set_mode": args.test_set_mode,
+            "fixed_n_pairs": args.n_pairs,
+            "n_is_model_feature": False,
+            "theta": dict(zip(ACE_PARAM_NAMES, args.theta)),
+            "n_test_simulations": args.n_test_simulations,
+            "n_posterior_draws": args.n_posterior_draws,
+            "dirichlet_alpha": list(args.dirichlet_alpha),
+            "total_variance": args.total_variance,
+            "simulation_method": "exact vectorized Wishart_2 Bartlett decomposition",
+            "feature_cols": list(COV_FEATURE_NAMES),
+            "param_names": list(ACE_PARAM_NAMES),
+            "var_feature": VAR_REDUCTION,
+            "flow_type": args.flow_type,
+            "flow_hidden": args.flow_hidden,
+            "flow_transforms": args.flow_transforms,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "max_epochs": args.epochs,
+            "stop_after_epochs": args.stop_after_epochs,
+            "device": str(device),
+            "base_seed": args.seed,
+            "training_data_seed": training_data_seed,
+            "training_seed": training_seed,
+            "test_data_seed": test_data_seed,
+            "elapsed_seconds": elapsed_seconds,
+            "definition": {
+                "SE(mean(theta))": (
+                    "sample SD (ddof=1) of posterior means over fixed-theta "
+                    "test datasets"
+                ),
+                "mean(posterior_SE)": (
+                    "mean posterior sample SD (ddof=1) over fixed-theta "
+                    "test datasets"
+                ),
+            },
+        }
+        with open(work_dir / "config.json", "w") as handle:
+            json.dump(config, handle, indent=2)
+        (work_dir / "COMPLETE").write_text("complete\n")
+        work_dir.rename(final_dir)
+        print(
+            f"Replicate {replicate} complete in {elapsed_seconds / 60:.1f} min: "
+            f"{final_dir}"
+        )
+    except Exception:
+        print(f"Partial files retained for diagnosis in {work_dir}", file=sys.stderr)
+        raise
+
+
+def save_ensemble_plot(summary: pd.DataFrame, theta: np.ndarray, path: Path) -> None:
+    test_counts = summary["n_test_simulations"].drop_duplicates().tolist()
+    if len(test_counts) != 1:
+        raise ValueError(f"Replicates disagree on test-set size: {test_counts}")
+    n_test_simulations = int(test_counts[0])
+    fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.1), squeeze=False)
+    colors = {"A": "tab:blue", "C": "tab:orange", "E": "tab:green"}
+    for column, parameter in enumerate(ACE_PARAM_NAMES):
+        axis = axes[0, column]
+        selected = summary.loc[summary["parameter"] == parameter]
+        x = selected["SE(mean(theta))"].to_numpy()
+        y = selected["mean(posterior_SE)"].to_numpy()
+        maximum = 1.10 * max(float(x.max()), float(y.max()))
+        axis.scatter(
+            x,
+            y,
+            s=52,
+            alpha=0.72,
+            color=colors[parameter],
+            edgecolor="white",
+            linewidth=0.45,
+        )
+        axis.plot([0, maximum], [0, maximum], "--", color="0.35", linewidth=1.2)
+        axis.set_xlim(0, maximum)
+        axis.set_ylim(0, maximum)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_title(f"{parameter} (true {theta[column]:g})")
+        axis.set_xlabel(
+            f"SE of posterior means across {n_test_simulations} datasets"
+        )
+        axis.set_ylabel("Mean posterior SE")
+        axis.grid(alpha=0.22)
+
+    fig.suptitle(
+        "Fixed-N NPE uncertainty across independently trained models\n"
+        "Each point is one NPE; dashed line: posterior SE = empirical SE"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.91))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def aggregate(args) -> None:
+    output_root = resolve(args.output_dir, RESULTS_DIR)
+    frames = []
+    missing = []
+    for replicate in range(1, args.n_replicates + 1):
+        replicate_dir = output_root / f"replicate_{replicate:03d}"
+        summary_path = replicate_dir / "fixed_theta_summary.csv"
+        if not (replicate_dir / "COMPLETE").exists() or not summary_path.exists():
+            missing.append(replicate)
+            continue
+        frame = pd.read_csv(summary_path)
+        if set(frame["parameter"]) != set(ACE_PARAM_NAMES) or len(frame) != 3:
+            raise ValueError(f"Malformed replicate summary: {summary_path}")
+        frames.append(frame)
+    if missing:
+        raise RuntimeError(
+            f"Cannot aggregate: {len(missing)} replicate(s) are incomplete: {missing}"
+        )
+
+    summary = pd.concat(frames, ignore_index=True)
+    long_path = output_root / "ensemble_summary_long.csv"
+    summary.to_csv(long_path, index=False)
+    wide = summary.pivot(
+        index="replicate",
+        columns="parameter",
+        values=["SE(mean(theta))", "mean(posterior_SE)"],
+    )
+    wide = wide.swaplevel(0, 1, axis=1).reindex(columns=ACE_PARAM_NAMES, level=0)
+    wide.columns = [f"{parameter}: {metric}" for parameter, metric in wide.columns]
+    wide.reset_index().to_csv(output_root / "ensemble_summary_table.csv", index=False)
+
+    theta = np.asarray(args.theta, dtype=float)
+    plot_path = output_root / "fixed_theta_npe_scatter.png"
+    save_ensemble_plot(summary, theta, plot_path)
+    print(f"Aggregated {args.n_replicates} NPEs")
+    print(f"Summary: {long_path}")
+    print(f"Plot:    {plot_path}")
+
+
+def add_common_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--n_replicates", type=int, default=DEFAULT_REPLICATES)
+    parser.add_argument("--n_pairs", type=int, default=DEFAULT_N_PAIRS)
+    parser.add_argument("--theta", type=float, nargs=3, default=list(DEFAULT_THETA))
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+
+
+def validate_common(parser: argparse.ArgumentParser, args) -> None:
+    if args.n_replicates < 1:
+        parser.error("--n_replicates must be positive")
+    if args.n_pairs < 3:
+        parser.error("--n_pairs must be at least 3")
+    theta = np.asarray(args.theta, dtype=float)
+    if np.any(theta <= 0) or not np.isclose(theta.sum(), 1.0):
+        parser.error("--theta must contain three positive values summing to 1")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser("run-one", help="Train/evaluate one NPE")
+    add_common_arguments(run_parser)
+    run_parser.add_argument("--replicate", type=int, required=True)
+    run_parser.add_argument(
+        "--n_training_simulations", type=int, default=DEFAULT_TRAINING_SIMULATIONS
+    )
+    run_parser.add_argument(
+        "--n_test_simulations", type=int, default=DEFAULT_TEST_SIMULATIONS
+    )
+    run_parser.add_argument(
+        "--n_posterior_draws", type=int, default=DEFAULT_POSTERIOR_DRAWS
+    )
+    run_parser.add_argument(
+        "--training_data_mode", choices=("independent", "shared"), default="independent"
+    )
+    run_parser.add_argument(
+        "--test_set_mode", choices=("shared", "independent"), default="shared"
+    )
+    run_parser.add_argument(
+        "--dirichlet_alpha", type=float, nargs=3, default=list(DEFAULT_ALPHA)
+    )
+    run_parser.add_argument("--total_variance", type=float, default=1.0)
+    run_parser.add_argument("--validation_fraction", type=float, default=0.15)
+    run_parser.add_argument("--epochs", type=int, default=500)
+    run_parser.add_argument("--stop_after_epochs", type=int, default=50)
+    run_parser.add_argument("--batch_size", type=int, default=1024)
+    run_parser.add_argument("--learning_rate", type=float, default=5e-4)
+    run_parser.add_argument(
+        "--flow_type", choices=("nsf", "maf", "maf_rqs", "mdn"), default="nsf"
+    )
+    run_parser.add_argument("--flow_hidden", type=int, default=64)
+    run_parser.add_argument("--flow_transforms", type=int, default=5)
+    run_parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
+    run_parser.add_argument("--force", action="store_true")
+
+    aggregate_parser = subparsers.add_parser(
+        "aggregate", help="Combine completed replicates and plot"
+    )
+    add_common_arguments(aggregate_parser)
+
+    args = parser.parse_args()
+    selected_parser = run_parser if args.command == "run-one" else aggregate_parser
+    validate_common(selected_parser, args)
+    if args.command == "run-one":
+        if not 1 <= args.replicate <= args.n_replicates:
+            run_parser.error("--replicate must be between 1 and --n_replicates")
+        if args.n_training_simulations < 20:
+            run_parser.error("--n_training_simulations must be at least 20")
+        if args.n_test_simulations < 2 or args.n_posterior_draws < 2:
+            run_parser.error("test simulations and posterior draws must be at least 2")
+        if not 0 < args.validation_fraction < 1:
+            run_parser.error("--validation_fraction must be between 0 and 1")
+        if any(alpha <= 0 for alpha in args.dirichlet_alpha):
+            run_parser.error("--dirichlet_alpha values must be positive")
+        if args.total_variance <= 0:
+            run_parser.error("--total_variance must be positive")
+        if not np.isclose(sum(args.theta), args.total_variance):
+            run_parser.error("sum(--theta) must equal --total_variance")
+        if min(args.epochs, args.stop_after_epochs, args.batch_size) <= 0:
+            run_parser.error("epochs, patience, and batch size must be positive")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    if args.command == "run-one":
+        cpu_count = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
+        torch.set_num_threads(max(1, cpu_count))
+        run_one(args)
+    else:
+        aggregate(args)
+
+
+if __name__ == "__main__":
+    main()
