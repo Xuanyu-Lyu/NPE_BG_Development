@@ -9,7 +9,7 @@ This file is designed for a Slurm array.  One array task runs one replicate::
     python 10b_fixed_theta_npe_ensemble.py run-one --replicate 1
 
 After all array tasks finish, aggregate their summaries and make the requested
-three-panel scatter plot::
+three-panel scatter plot plus a posterior-to-empirical SE ratio plot::
 
     python 10b_fixed_theta_npe_ensemble.py aggregate
 
@@ -404,7 +404,12 @@ def run_one(args) -> None:
         raise
 
 
-def save_ensemble_plot(summary: pd.DataFrame, theta: np.ndarray, path: Path) -> None:
+def save_ensemble_plot(
+    summary: pd.DataFrame,
+    theta: np.ndarray,
+    n_pairs: int,
+    path: Path,
+) -> None:
     test_counts = summary["n_test_simulations"].drop_duplicates().tolist()
     if len(test_counts) != 1:
         raise ValueError(f"Replicates disagree on test-set size: {test_counts}")
@@ -438,10 +443,91 @@ def save_ensemble_plot(summary: pd.DataFrame, theta: np.ndarray, path: Path) -> 
         axis.grid(alpha=0.22)
 
     fig.suptitle(
-        "Fixed-N NPE uncertainty across independently trained models\n"
+        f"{summary['replicate'].nunique()} Independently trained NPE "
+        f"with N pairs={n_pairs}\n"
         "Each point is one NPE; dashed line: posterior SE = empirical SE"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.91))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_se_ratio_boxplot(
+    summary: pd.DataFrame,
+    n_pairs: int,
+    path: Path,
+) -> None:
+    """Show model-to-model calibration ratios with boxes and all NPE points."""
+    values_by_parameter = [
+        summary.loc[
+            summary["parameter"] == parameter,
+            "posterior_SE/empirical_SE",
+        ].to_numpy()
+        for parameter in ACE_PARAM_NAMES
+    ]
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+
+    fig, axis = plt.subplots(figsize=(8.2, 5.8))
+    boxes = axis.boxplot(
+        values_by_parameter,
+        widths=0.48,
+        patch_artist=True,
+        showfliers=False,
+        medianprops={"color": "0.15", "linewidth": 1.8},
+        whiskerprops={"color": "0.35", "linewidth": 1.2},
+        capprops={"color": "0.35", "linewidth": 1.2},
+    )
+    for box, color in zip(boxes["boxes"], colors):
+        box.set_facecolor(color)
+        box.set_alpha(0.28)
+        box.set_edgecolor(color)
+        box.set_linewidth(1.4)
+
+    # A deterministic horizontal jitter exposes the full distribution without
+    # allowing overlapping points to hide how concentrated the NPEs are.
+    rng = np.random.default_rng(20260917)
+    for position, (parameter, values, color) in enumerate(
+        zip(ACE_PARAM_NAMES, values_by_parameter, colors), start=1
+    ):
+        jitter = rng.uniform(-0.13, 0.13, size=len(values))
+        axis.scatter(
+            position + jitter,
+            values,
+            s=28,
+            alpha=0.55,
+            color=color,
+            edgecolor="white",
+            linewidth=0.35,
+            zorder=3,
+        )
+    all_values = np.concatenate(values_by_parameter)
+    lower = min(float(all_values.min()), 1.0)
+    upper = max(float(all_values.max()), 1.0)
+    padding = max(0.015, 0.12 * (upper - lower))
+    axis.set_ylim(max(0.0, lower - padding), upper + padding)
+    axis.axhline(
+        1.0,
+        linestyle="--",
+        color="0.35",
+        linewidth=1.3,
+        label="Perfect calibration (ratio = 1)",
+        zorder=1,
+    )
+    tick_labels = [
+        f"{parameter}\nmedian = {np.median(values):.3f}"
+        for parameter, values in zip(ACE_PARAM_NAMES, values_by_parameter)
+    ]
+    axis.set_xticks(range(1, len(ACE_PARAM_NAMES) + 1), tick_labels)
+    axis.set_xlabel("ACE parameter")
+    axis.set_ylabel("Mean posterior SE / empirical SE")
+    axis.set_title(
+        f"{summary['replicate'].nunique()} Independently trained NPE "
+        f"with N pairs={n_pairs}\n"
+        "Posterior-to-empirical SE ratio across models"
+    )
+    axis.grid(axis="y", alpha=0.22)
+    axis.legend(frameon=False, loc="best")
+    fig.tight_layout()
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -466,23 +552,54 @@ def aggregate(args) -> None:
         )
 
     summary = pd.concat(frames, ignore_index=True)
+    if (summary["SE(mean(theta))"] <= 0).any():
+        raise ValueError("Empirical SE must be positive to calculate SE ratios")
+    summary["posterior_SE/empirical_SE"] = (
+        summary["mean(posterior_SE)"] / summary["SE(mean(theta))"]
+    )
     long_path = output_root / "ensemble_summary_long.csv"
     summary.to_csv(long_path, index=False)
     wide = summary.pivot(
         index="replicate",
         columns="parameter",
-        values=["SE(mean(theta))", "mean(posterior_SE)"],
+        values=[
+            "SE(mean(theta))",
+            "mean(posterior_SE)",
+            "posterior_SE/empirical_SE",
+        ],
     )
     wide = wide.swaplevel(0, 1, axis=1).reindex(columns=ACE_PARAM_NAMES, level=0)
     wide.columns = [f"{parameter}: {metric}" for parameter, metric in wide.columns]
     wide.reset_index().to_csv(output_root / "ensemble_summary_table.csv", index=False)
 
+    ratio_summary = (
+        summary.groupby("parameter", sort=False)["posterior_SE/empirical_SE"]
+        .agg(
+            n_models="count",
+            mean="mean",
+            sd="std",
+            minimum="min",
+            q1=lambda values: values.quantile(0.25),
+            median="median",
+            q3=lambda values: values.quantile(0.75),
+            maximum="max",
+        )
+        .reindex(ACE_PARAM_NAMES)
+        .reset_index()
+    )
+    ratio_summary_path = output_root / "ensemble_se_ratio_summary.csv"
+    ratio_summary.to_csv(ratio_summary_path, index=False)
+
     theta = np.asarray(args.theta, dtype=float)
     plot_path = output_root / "fixed_theta_npe_scatter.png"
-    save_ensemble_plot(summary, theta, plot_path)
+    save_ensemble_plot(summary, theta, args.n_pairs, plot_path)
+    ratio_plot_path = output_root / "fixed_theta_npe_se_ratio_boxplot.png"
+    save_se_ratio_boxplot(summary, args.n_pairs, ratio_plot_path)
     print(f"Aggregated {args.n_replicates} NPEs")
     print(f"Summary: {long_path}")
-    print(f"Plot:    {plot_path}")
+    print(f"Ratio summary: {ratio_summary_path}")
+    print(f"Scatter plot:  {plot_path}")
+    print(f"Ratio plot:    {ratio_plot_path}")
 
 
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
