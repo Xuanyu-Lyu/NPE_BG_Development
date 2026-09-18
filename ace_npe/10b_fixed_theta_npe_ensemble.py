@@ -8,8 +8,8 @@ This file is designed for a Slurm array.  One array task runs one replicate::
 
     python 10b_fixed_theta_npe_ensemble.py run-one --replicate 1
 
-After all array tasks finish, aggregate their summaries and make the requested
-three-panel scatter plot plus a posterior-to-empirical SE ratio plot::
+After all array tasks finish, aggregate their summaries and make model-level
+calibration plots plus dataset-level between-NPE uncertainty plots::
 
     python 10b_fixed_theta_npe_ensemble.py aggregate
 
@@ -429,7 +429,15 @@ def save_ensemble_plot(
         selected = summary.loc[summary["parameter"] == parameter]
         x = selected["SE(mean(theta))"].to_numpy()
         y = selected[RMS_POSTERIOR_SE_COLUMN].to_numpy()
-        maximum = 1.10 * max(float(x.max()), float(y.max()))
+        combined = np.concatenate((x, y))
+        lower = float(combined.min())
+        upper = float(combined.max())
+        span = upper - lower
+        if span == 0:
+            span = max(abs(upper), 1.0) * 0.05
+        padding = 0.08 * span
+        lower = max(0.0, lower - padding)
+        upper += padding
         axis.scatter(
             x,
             y,
@@ -439,24 +447,275 @@ def save_ensemble_plot(
             edgecolor="white",
             linewidth=0.45,
         )
-        axis.plot([0, maximum], [0, maximum], "--", color="0.35", linewidth=1.2)
-        axis.set_xlim(0, maximum)
-        axis.set_ylim(0, maximum)
+        axis.plot(
+            [lower, upper], [lower, upper], "--", color="0.35", linewidth=1.2
+        )
+        axis.set_xlim(lower, upper)
+        axis.set_ylim(lower, upper)
         axis.set_aspect("equal", adjustable="box")
         axis.set_title(f"{parameter} (true {theta[column]:g})")
         axis.set_xlabel(
-            f"SE of posterior means across {n_test_simulations} datasets"
+            f"sqrt(B_m): SD of posterior means across {n_test_simulations} datasets"
         )
-        axis.set_ylabel("sqrt(mean posterior variance)")
+        axis.set_ylabel("sqrt(W_m): RMS posterior SD")
         axis.grid(alpha=0.22)
 
     fig.suptitle(
-        f"{summary['replicate'].nunique()} Independently trained NPE "
+        f"{summary['replicate'].nunique()} independently trained NPEs "
         f"with N pairs={n_pairs}\n"
         "Each point is one NPE; dashed line: "
-        "sqrt(mean posterior variance) = empirical SE"
+        "sqrt(W_m) = sqrt(B_m)"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.91))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def summarize_dataset_model_uncertainty(
+    raw_results: pd.DataFrame,
+    n_replicates: int,
+) -> pd.DataFrame:
+    """Calculate between-NPE and within-posterior variance for each dataset.
+
+    For shared test dataset ``j`` and parameter ``theta``:
+
+      B_j = Var_m(E[theta | x_j, NPE_m])
+      W_j = Mean_m(Var[theta | x_j, NPE_m])
+
+    Thus B_j isolates disagreement among independently trained NPEs while
+    W_j is their average reported posterior variance for the same dataset.
+    """
+    if n_replicates < 2:
+        raise ValueError("At least two NPE replicates are required for B_j")
+
+    rows = []
+    for parameter in ACE_PARAM_NAMES:
+        mean_column = f"{parameter}_posterior_mean"
+        sd_column = f"{parameter}_posterior_sd"
+        for test_simulation, selected in raw_results.groupby(
+            "test_simulation", sort=True
+        ):
+            if len(selected) != n_replicates:
+                raise ValueError(
+                    f"Test dataset {test_simulation} has {len(selected)} NPE "
+                    f"results; expected {n_replicates}"
+                )
+            posterior_means = selected[mean_column].to_numpy(dtype=float)
+            posterior_variances = np.square(
+                selected[sd_column].to_numpy(dtype=float)
+            )
+            between_npe_variance = float(posterior_means.var(ddof=1))
+            within_posterior_variance = float(posterior_variances.mean())
+            if between_npe_variance <= 0 or within_posterior_variance <= 0:
+                raise ValueError(
+                    f"Non-positive B_j or W_j for {parameter}, dataset "
+                    f"{test_simulation}"
+                )
+            rows.append(
+                {
+                    "test_simulation": int(test_simulation),
+                    "parameter": parameter,
+                    "n_models": n_replicates,
+                    "B_j_between_NPE_variance": between_npe_variance,
+                    "W_j_mean_posterior_variance": within_posterior_variance,
+                    "sqrt(B_j)": np.sqrt(between_npe_variance),
+                    "sqrt(W_j)": np.sqrt(within_posterior_variance),
+                    "B_j/W_j": (
+                        between_npe_variance / within_posterior_variance
+                    ),
+                    "mean_NPE_posterior_mean": float(posterior_means.mean()),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def save_dataset_model_uncertainty_scatter(
+    dataset_summary: pd.DataFrame,
+    theta: np.ndarray,
+    n_pairs: int,
+    path: Path,
+) -> None:
+    """Compare between-NPE and within-posterior SD for each shared dataset."""
+    fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.1), squeeze=False)
+    colors = {"A": "tab:blue", "C": "tab:orange", "E": "tab:green"}
+    for column, parameter in enumerate(ACE_PARAM_NAMES):
+        axis = axes[0, column]
+        selected = dataset_summary.loc[dataset_summary["parameter"] == parameter]
+        x = selected["sqrt(B_j)"].to_numpy()
+        y = selected["sqrt(W_j)"].to_numpy()
+        if np.any(x <= 0) or np.any(y <= 0):
+            raise ValueError("Dataset-level uncertainty values must be positive")
+
+        def padded_limits(values: np.ndarray) -> tuple[float, float]:
+            lower = float(values.min())
+            upper = float(values.max())
+            span = upper - lower
+            if span == 0:
+                span = max(abs(upper), 1.0) * 0.05
+            return max(0.0, lower - 0.10 * span), upper + 0.10 * span
+
+        x_lower, x_upper = padded_limits(x)
+        y_lower, y_upper = padded_limits(y)
+
+        axis.scatter(
+            x,
+            y,
+            s=48,
+            alpha=0.68,
+            color=colors[parameter],
+            edgecolor="white",
+            linewidth=0.4,
+        )
+        axis.set_xlim(x_lower, x_upper)
+        axis.set_ylim(y_lower, y_upper)
+        equality_lower = max(x_lower, y_lower)
+        equality_upper = min(x_upper, y_upper)
+        if equality_lower < equality_upper:
+            axis.plot(
+                [equality_lower, equality_upper],
+                [equality_lower, equality_upper],
+                "--",
+                color="0.35",
+                linewidth=1.2,
+            )
+        elif y.min() > x.max():
+            axis.text(
+                0.03,
+                0.04,
+                "All datasets: sqrt(W_j) > sqrt(B_j)",
+                transform=axis.transAxes,
+                fontsize=9,
+                color="0.35",
+            )
+        elif x.min() > y.max():
+            axis.text(
+                0.03,
+                0.04,
+                "All datasets: sqrt(B_j) > sqrt(W_j)",
+                transform=axis.transAxes,
+                fontsize=9,
+                color="0.35",
+            )
+        axis.set_title(f"{parameter} (true {theta[column]:g})")
+        axis.set_xlabel("sqrt(B_j): between-NPE SD of posterior means")
+        axis.set_ylabel("sqrt(W_j): RMS posterior SD across NPEs")
+        axis.grid(alpha=0.22, which="both")
+
+    n_models = int(dataset_summary["n_models"].drop_duplicates().item())
+    n_datasets = int(dataset_summary["test_simulation"].nunique())
+    fig.suptitle(
+        f"Between-NPE versus within-posterior uncertainty; N pairs={n_pairs}\n"
+        f"Each point is one shared dataset ({n_models} NPEs; "
+        f"{n_datasets} datasets); axes are tightly scaled to show variation"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_dataset_model_uncertainty_ratio_boxplot(
+    dataset_summary: pd.DataFrame,
+    n_pairs: int,
+    path: Path,
+) -> None:
+    """Plot B_j/W_j across shared datasets with every dataset visible."""
+    values_by_parameter = [
+        dataset_summary.loc[
+            dataset_summary["parameter"] == parameter, "B_j/W_j"
+        ].to_numpy()
+        for parameter in ACE_PARAM_NAMES
+    ]
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    fig, axis = plt.subplots(figsize=(8.2, 5.8))
+    boxes = axis.boxplot(
+        values_by_parameter,
+        widths=0.48,
+        patch_artist=True,
+        showfliers=False,
+        medianprops={"color": "0.15", "linewidth": 1.8},
+        whiskerprops={"color": "0.35", "linewidth": 1.2},
+        capprops={"color": "0.35", "linewidth": 1.2},
+    )
+    for box, color in zip(boxes["boxes"], colors):
+        box.set_facecolor(color)
+        box.set_alpha(0.28)
+        box.set_edgecolor(color)
+        box.set_linewidth(1.4)
+
+    rng = np.random.default_rng(20260918)
+    for position, (values, color) in enumerate(
+        zip(values_by_parameter, colors), start=1
+    ):
+        jitter = rng.uniform(-0.13, 0.13, size=len(values))
+        axis.scatter(
+            position + jitter,
+            values,
+            s=28,
+            alpha=0.58,
+            color=color,
+            edgecolor="white",
+            linewidth=0.35,
+            zorder=3,
+        )
+
+    all_values = np.concatenate(values_by_parameter)
+    if np.any(all_values <= 0):
+        raise ValueError("B_j/W_j ratios must be positive")
+    log_lower = float(np.log10(all_values.min()))
+    log_upper = float(np.log10(all_values.max()))
+    log_span = log_upper - log_lower
+    if log_span == 0:
+        log_span = 0.1
+    y_lower = 10 ** (log_lower - 0.10 * log_span)
+    y_upper = 10 ** (log_upper + 0.10 * log_span)
+    axis.set_yscale("log")
+    axis.set_ylim(y_lower, y_upper)
+    if y_lower <= 1.0 <= y_upper:
+        axis.axhline(
+            1.0,
+            linestyle="--",
+            color="0.35",
+            linewidth=1.3,
+            label="Between-NPE variance = posterior variance",
+            zorder=1,
+        )
+        axis.legend(frameon=False, loc="best")
+    elif y_upper < 1.0:
+        axis.text(
+            0.99,
+            0.98,
+            "B_j / W_j = 1 lies above the displayed range",
+            transform=axis.transAxes,
+            ha="right",
+            va="top",
+            fontsize=9,
+            color="0.35",
+        )
+    else:
+        axis.text(
+            0.99,
+            0.02,
+            "B_j / W_j = 1 lies below the displayed range",
+            transform=axis.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=9,
+            color="0.35",
+        )
+    tick_labels = [
+        f"{parameter}\nmedian = {np.median(values):.3g}"
+        for parameter, values in zip(ACE_PARAM_NAMES, values_by_parameter)
+    ]
+    axis.set_xticks(range(1, len(ACE_PARAM_NAMES) + 1), tick_labels)
+    axis.set_xlabel("ACE parameter")
+    axis.set_ylabel("B_j / W_j (log scale)")
+    axis.set_title(
+        f"Between-NPE model variance relative to posterior variance; "
+        f"N pairs={n_pairs}\n"
+        "Each point is one shared test dataset"
+    )
+    axis.grid(axis="y", alpha=0.22, which="both")
+    fig.tight_layout()
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -544,6 +803,8 @@ def save_se_ratio_boxplot(
 def aggregate(args) -> None:
     output_root = resolve(args.output_dir, RESULTS_DIR)
     frames = []
+    raw_frames = []
+    reference_test_data = None
     missing = []
     for replicate in range(1, args.n_replicates + 1):
         replicate_dir = output_root / f"replicate_{replicate:03d}"
@@ -554,17 +815,60 @@ def aggregate(args) -> None:
         frame = pd.read_csv(summary_path)
         if set(frame["parameter"]) != set(ACE_PARAM_NAMES) or len(frame) != 3:
             raise ValueError(f"Malformed replicate summary: {summary_path}")
+        raw_path = replicate_dir / "fixed_theta_posterior_results.csv"
+        if not raw_path.exists():
+            raise FileNotFoundError(f"Missing per-dataset results: {raw_path}")
+        raw = pd.read_csv(raw_path)
+        required_raw_columns = {
+            "replicate",
+            "test_simulation",
+            *COV_FEATURE_NAMES,
+            *(f"true_{parameter}" for parameter in ACE_PARAM_NAMES),
+            *(f"{parameter}_posterior_mean" for parameter in ACE_PARAM_NAMES),
+            *(f"{parameter}_posterior_sd" for parameter in ACE_PARAM_NAMES),
+        }
+        missing_raw_columns = required_raw_columns.difference(raw.columns)
+        if missing_raw_columns:
+            raise ValueError(
+                f"Missing columns in {raw_path}: {sorted(missing_raw_columns)}"
+            )
+        if raw["test_simulation"].duplicated().any():
+            raise ValueError(f"Duplicate test_simulation values in {raw_path}")
+        raw = raw.sort_values("test_simulation").reset_index(drop=True)
+        raw["replicate"] = replicate
+
+        shared_columns = [
+            "test_simulation",
+            *COV_FEATURE_NAMES,
+            *(f"true_{parameter}" for parameter in ACE_PARAM_NAMES),
+        ]
+        current_test_data = raw[shared_columns]
+        if reference_test_data is None:
+            reference_test_data = current_test_data.copy()
+        else:
+            if not np.array_equal(
+                current_test_data["test_simulation"].to_numpy(),
+                reference_test_data["test_simulation"].to_numpy(),
+            ):
+                raise ValueError(
+                    f"Test simulation IDs differ in replicate {replicate}"
+                )
+            numeric_columns = shared_columns[1:]
+            if not np.allclose(
+                current_test_data[numeric_columns].to_numpy(dtype=float),
+                reference_test_data[numeric_columns].to_numpy(dtype=float),
+                rtol=0.0,
+                atol=1e-10,
+            ):
+                raise ValueError(
+                    "Dataset-level B_j/W_j requires the shared STEP 10b test "
+                    f"set, but replicate {replicate} contains different data"
+                )
+
         # Runs completed before the RMS-SE metric was introduced already have
         # every per-dataset posterior SD in their raw results. Reconstruct the
         # metric here so aggregation never requires retraining those NPEs.
         if RMS_POSTERIOR_SE_COLUMN not in frame:
-            raw_path = replicate_dir / "fixed_theta_posterior_results.csv"
-            if not raw_path.exists():
-                raise FileNotFoundError(
-                    f"Cannot reconstruct {RMS_POSTERIOR_SE_COLUMN}: "
-                    f"missing {raw_path}"
-                )
-            raw = pd.read_csv(raw_path)
             frame[RMS_POSTERIOR_SE_COLUMN] = np.nan
             for parameter in ACE_PARAM_NAMES:
                 sd_column = f"{parameter}_posterior_sd"
@@ -578,12 +882,14 @@ def aggregate(args) -> None:
                     RMS_POSTERIOR_SE_COLUMN,
                 ] = np.sqrt(np.mean(np.square(posterior_sds)))
         frames.append(frame)
+        raw_frames.append(raw)
     if missing:
         raise RuntimeError(
             f"Cannot aggregate: {len(missing)} replicate(s) are incomplete: {missing}"
         )
 
     summary = pd.concat(frames, ignore_index=True)
+    raw_results = pd.concat(raw_frames, ignore_index=True)
     if (summary["SE(mean(theta))"] <= 0).any():
         raise ValueError("Empirical SE must be positive to calculate SE ratios")
     summary[RMS_SE_RATIO_COLUMN] = (
@@ -623,16 +929,37 @@ def aggregate(args) -> None:
     ratio_summary_path = output_root / "ensemble_se_ratio_summary.csv"
     ratio_summary.to_csv(ratio_summary_path, index=False)
 
+    dataset_summary = summarize_dataset_model_uncertainty(
+        raw_results, args.n_replicates
+    )
+    dataset_summary_path = output_root / "ensemble_dataset_uncertainty.csv"
+    dataset_summary.to_csv(dataset_summary_path, index=False)
+
     theta = np.asarray(args.theta, dtype=float)
     plot_path = output_root / "fixed_theta_npe_scatter.png"
     save_ensemble_plot(summary, theta, args.n_pairs, plot_path)
     ratio_plot_path = output_root / "fixed_theta_npe_se_ratio_boxplot.png"
     save_se_ratio_boxplot(summary, args.n_pairs, ratio_plot_path)
+    dataset_scatter_path = (
+        output_root / "fixed_theta_npe_dataset_model_uncertainty_scatter.png"
+    )
+    save_dataset_model_uncertainty_scatter(
+        dataset_summary, theta, args.n_pairs, dataset_scatter_path
+    )
+    dataset_ratio_path = (
+        output_root / "fixed_theta_npe_dataset_B_over_W_boxplot.png"
+    )
+    save_dataset_model_uncertainty_ratio_boxplot(
+        dataset_summary, args.n_pairs, dataset_ratio_path
+    )
     print(f"Aggregated {args.n_replicates} NPEs")
     print(f"Summary: {long_path}")
     print(f"Ratio summary: {ratio_summary_path}")
+    print(f"Dataset uncertainty: {dataset_summary_path}")
     print(f"Scatter plot:  {plot_path}")
     print(f"Ratio plot:    {ratio_plot_path}")
+    print(f"Dataset scatter: {dataset_scatter_path}")
+    print(f"Dataset B/W:     {dataset_ratio_path}")
 
 
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
