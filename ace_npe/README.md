@@ -53,7 +53,8 @@ python 08_compare_fixed_n_dirichlet_openmx.py
 # 09 — N=20,000 comparison across NPE training-set sizes
 python 09_compare_n20000_training_sizes.py
 
-# 10 — 500 repeated datasets per N at fixed theta=(0.4,0.3,0.3)
+# 10 — evaluate the 100k-simulation fixed-N models on 500 repeated datasets
+#      at theta=(0.4,0.3,0.3)
 python 10_evaluate_fixed_theta.py
 
 # 11 — paired fixed-theta comparison of the 100 NPEs with a grid posterior
@@ -62,6 +63,33 @@ Rscript 11_compare_fixed_theta_npe_grid.R
 # On CU Boulder Alpine, submit STEP 11 from the repository root:
 sbatch ace_npe/11_compare_fixed_theta_npe_grid.sh
 ```
+
+STEP 10 defaults to models in
+`results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model
+uses a 100,000-row simulation corpus split into 70,000 training, 15,000
+validation, and 15,000 held-out rows. STEP 10 creates a separate set of 500
+fixed-theta evaluation datasets and does not retrain the models.
+
+STEP 10b is now evaluation-only: it reloads the 100 completed models from
+`results/fixed_theta_npe_ensemble/` and evaluates 500 shared datasets without
+retraining. Submit its evaluation array, aggregation job, and STEP 11 with
+dependencies:
+
+```bash
+eval_job=$(sbatch --parsable \
+  ace_npe/10b_fixed_theta_npe_ensemble.sh)
+
+aggregate_job=$(sbatch --parsable --dependency=afterok:"$eval_job" \
+  ace_npe/10b_aggregate_fixed_theta_npe_ensemble.sh)
+
+sbatch --dependency=afterok:"$aggregate_job" \
+  ace_npe/11_compare_fixed_theta_npe_grid.sh
+```
+
+The trained models remain in `results/fixed_theta_npe_ensemble/`. New
+evaluation and grid-comparison outputs are written to
+`results/fixed_theta_npe_ensemble_evaluation/` and
+`results/fixed_theta_npe_grid_comparison/`, respectively.
 
 `demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
 it is not a pipeline step.
@@ -146,7 +174,7 @@ ace_npe/
 ├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
 ├── 09_compare_n20000_training_sizes.py     20k/50k/100k training comparison
 ├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
-├── 10b_fixed_theta_npe_ensemble.py   100 independently trained NPEs at N=1000
+├── 10b_fixed_theta_npe_ensemble.py   reevaluate 100 saved NPEs at N=1000
 ├── 11_compare_fixed_theta_npe_grid.R paired NPE vs grid-posterior diagnostics
 ├── 11_compare_fixed_theta_npe_grid.sh Alpine submission script for STEP 11
 ├── demo_single_fit.ipynb             worked single-observation example

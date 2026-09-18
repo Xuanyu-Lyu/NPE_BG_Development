@@ -1,12 +1,17 @@
-"""STEP 10 -- evaluate fixed-N Dirichlet NPEs at one ACE condition.
+"""STEP 10 -- evaluate 100k-simulation fixed-N NPEs at one ACE condition.
 
-The default experiment evaluates the existing N=50, 100, 500, and 1000 NPEs.
-For each N it generates 500 independent MZ/DZ datasets at
+The default experiment evaluates the existing N=50, 100, 500, and 1000 NPEs
+trained from 100,000 prior-predictive simulations per N. For each N it
+generates 500 independent MZ/DZ datasets at
 theta=(A, C, E)=(0.4, 0.3, 0.3) and compares:
 
 * the empirical SE of the posterior-mean estimator (the sample SD of posterior
   means across repeated datasets); and
-* the mean posterior SE (the average posterior SD reported by the NPE).
+* the root-mean-square posterior SE, ``sqrt(mean(posterior variance))``.
+
+The mean posterior SE is retained in the output tables as a secondary
+descriptive metric, but the calibration plot uses the RMS posterior SE because
+sampling variance should be compared with average posterior variance.
 
 Metrics are reported for all 500 simulations and for five non-overlapping
 blocks of 100. The calibration plot uses color for N, large points for the
@@ -41,11 +46,17 @@ from ace_model import (  # noqa: E402
 
 
 DEFAULT_N_PAIRS = (50, 100, 500, 1000)
-DEFAULT_MODELS_DIR = "prior_comparison/dirichlet"
-DEFAULT_OUTPUT_DIR = "fixed_theta_comparison"
+DEFAULT_MODELS_DIR = "prior_comparison_100k_N20000/dirichlet"
+DEFAULT_OUTPUT_DIR = "fixed_theta_comparison_100k"
+DEFAULT_EXPECTED_MODEL_SIMULATIONS = 100_000
+RMS_POSTERIOR_SE_COLUMN = "sqrt(mean(posterior_var))"
 
 
-def validate_model(loaded: dict, n_pairs: int) -> None:
+def validate_model(
+    loaded: dict,
+    n_pairs: int,
+    expected_model_simulations: int | None,
+) -> None:
     """Ensure the loaded run is the requested fixed-N Dirichlet model."""
     config = loaded["config"]
     if config.get("simulation_scheme") != "dirichlet":
@@ -67,6 +78,21 @@ def validate_model(loaded: dict, n_pairs: int) -> None:
             f"N={n_pairs}: model parameters are {loaded['param_names']}; "
             f"expected {list(ACE_PARAM_NAMES)}"
         )
+    split_columns = ("training_rows", "validation_rows", "test_rows")
+    split_counts = [config.get(column) for column in split_columns]
+    if expected_model_simulations is not None:
+        if any(value is None for value in split_counts):
+            raise ValueError(
+                f"N={n_pairs}: model config does not record all of "
+                f"{split_columns}, so its simulation budget cannot be verified"
+            )
+        observed_total = sum(int(value) for value in split_counts)
+        if observed_total != expected_model_simulations:
+            raise ValueError(
+                f"N={n_pairs}: model used {observed_total:,} total simulations; "
+                f"expected {expected_model_simulations:,}. Select the 100k model "
+                "directory or change --expected_model_simulations."
+            )
 
 
 def simulate_features(
@@ -182,6 +208,7 @@ def summarize_results(
 
         for group_label, group in groups:
             for parameter in ACE_PARAM_NAMES:
+                posterior_sds = group[f"{parameter}_posterior_sd"]
                 rows.append(
                     {
                         "N_pairs": n_pairs,
@@ -193,9 +220,10 @@ def summarize_results(
                         "SE(mean(theta))": group[
                             f"{parameter}_posterior_mean"
                         ].std(ddof=1),
-                        "mean(posterior_SE)": group[
-                            f"{parameter}_posterior_sd"
-                        ].mean(),
+                        "mean(posterior_SE)": posterior_sds.mean(),
+                        RMS_POSTERIOR_SE_COLUMN: np.sqrt(
+                            np.mean(np.square(posterior_sds))
+                        ),
                     }
                 )
     return pd.DataFrame(rows)
@@ -214,7 +242,11 @@ def make_wide_table(
     wide = summary.pivot(
         index=["N_pairs", "group", "n_simulations"],
         columns="parameter",
-        values=["SE(mean(theta))", "mean(posterior_SE)"],
+        values=[
+            "SE(mean(theta))",
+            "mean(posterior_SE)",
+            RMS_POSTERIOR_SE_COLUMN,
+        ],
     )
     wide = wide.swaplevel(0, 1, axis=1).reindex(
         columns=ACE_PARAM_NAMES, level=0
@@ -240,7 +272,7 @@ def save_calibration_plot(
     theta: np.ndarray,
     path: Path,
 ) -> None:
-    """Plot posterior SE against empirical SE, with block stability points."""
+    """Plot RMS posterior SE against empirical SE, with block stability points."""
     cmap = plt.get_cmap("viridis")
     color_positions = np.linspace(0.12, 0.88, len(n_values))
     colors = {
@@ -267,7 +299,7 @@ def save_calibration_plot(
             color = colors[n_pairs]
             axis.scatter(
                 blocks["SE(mean(theta))"],
-                blocks["mean(posterior_SE)"],
+                blocks[RMS_POSTERIOR_SE_COLUMN],
                 s=34,
                 color=color,
                 alpha=0.48,
@@ -275,7 +307,7 @@ def save_calibration_plot(
                 zorder=2,
             )
             x_value = float(overall["SE(mean(theta))"].iloc[0])
-            y_value = float(overall["mean(posterior_SE)"].iloc[0])
+            y_value = float(overall[RMS_POSTERIOR_SE_COLUMN].iloc[0])
             axis.scatter(
                 [x_value],
                 [y_value],
@@ -296,7 +328,7 @@ def save_calibration_plot(
             maximum = max(
                 maximum,
                 float(at_n["SE(mean(theta))"].max()),
-                float(at_n["mean(posterior_SE)"].max()),
+                float(at_n[RMS_POSTERIOR_SE_COLUMN].max()),
             )
 
         limit = maximum * 1.12
@@ -306,7 +338,7 @@ def save_calibration_plot(
         axis.set_aspect("equal", adjustable="box")
         axis.set_title(parameter)
         axis.set_xlabel("SE of posterior means across datasets")
-        axis.set_ylabel("Mean posterior SE")
+        axis.set_ylabel("sqrt(mean posterior variance)")
         axis.grid(alpha=0.22)
 
     legend_handles = [
@@ -357,7 +389,7 @@ def save_calibration_plot(
     fig.suptitle(
         "Fixed-theta NPE uncertainty comparison\n"
         f"True (A, C, E)=({theta[0]:g}, {theta[1]:g}, {theta[2]:g}); "
-        "dashed line: posterior SE = empirical SE"
+        "dashed line: sqrt(mean posterior variance) = empirical SE"
     )
     fig.tight_layout(rect=(0.0, 0.11, 1.0, 0.92))
     fig.savefig(path, dpi=300, bbox_inches="tight")
@@ -369,6 +401,15 @@ def main() -> None:
         description="Evaluate fixed-N Dirichlet NPEs at one fixed ACE condition"
     )
     parser.add_argument("--models_dir", default=DEFAULT_MODELS_DIR)
+    parser.add_argument(
+        "--expected_model_simulations",
+        type=int,
+        default=DEFAULT_EXPECTED_MODEL_SIMULATIONS,
+        help=(
+            "Required total training-corpus size (train + validation + held-out "
+            "test rows); use 0 to disable this check (default: 100000)"
+        ),
+    )
     parser.add_argument(
         "--n_pairs", type=int, nargs="+", default=list(DEFAULT_N_PAIRS)
     )
@@ -389,6 +430,8 @@ def main() -> None:
         parser.error("--group_size must be between 2 and --n_simulations")
     if args.n_posterior_samples < 2:
         parser.error("--n_posterior_samples must be at least 2")
+    if args.expected_model_simulations < 0:
+        parser.error("--expected_model_simulations must be non-negative")
 
     theta = np.asarray(args.theta, dtype=float)
     if theta.shape != (3,) or np.any(theta <= 0):
@@ -399,6 +442,11 @@ def main() -> None:
     models_dir = resolve(args.models_dir, MODELS_DIR)
     output_dir = resolve(args.output_dir, RESULTS_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
+    expected_model_simulations = (
+        args.expected_model_simulations
+        if args.expected_model_simulations > 0
+        else None
+    )
 
     frames = []
     model_dirs = {}
@@ -406,7 +454,7 @@ def main() -> None:
     for n_pairs in n_values:
         model_dir = models_dir / f"N{n_pairs}"
         loaded = load_posterior(model_dir)
-        validate_model(loaded, n_pairs)
+        validate_model(loaded, n_pairs, expected_model_simulations)
         model_dirs[n_pairs] = str(model_dir)
         print(f"\nN={n_pairs} model: {model_dir}")
         print(
@@ -454,6 +502,7 @@ def main() -> None:
         json.dump(
             {
                 "model_dirs": model_dirs,
+                "expected_model_simulations": expected_model_simulations,
                 "n_pairs": list(n_values),
                 "theta": dict(zip(ACE_PARAM_NAMES, theta.tolist())),
                 "n_simulations_per_n": args.n_simulations,
@@ -468,6 +517,10 @@ def main() -> None:
                     "mean(posterior_SE)": (
                         "mean posterior sample SD (ddof=1) across "
                         "simulated datasets"
+                    ),
+                    RMS_POSTERIOR_SE_COLUMN: (
+                        "square root of the mean posterior sample variance "
+                        "across simulated datasets; primary plot metric"
                     ),
                     "plot_large_points": (
                         f"metrics calculated from all {args.n_simulations} "

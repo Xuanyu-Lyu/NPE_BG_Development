@@ -37,7 +37,9 @@ if (length(script_file) == 1L) {
 }
 
 defaults <- list(
-  ensemble_dir = file.path(script_dir, "results", "fixed_theta_npe_ensemble"),
+  ensemble_dir = file.path(
+    script_dir, "results", "fixed_theta_npe_ensemble_evaluation"
+  ),
   output_dir = file.path(
     script_dir, "results", "fixed_theta_npe_grid_comparison"
   ),

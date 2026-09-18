@@ -1,22 +1,23 @@
-"""STEP 10b -- train and evaluate an ensemble of fixed-N NPEs.
+"""STEP 10b -- reevaluate the saved fixed-N NPE ensemble.
 
-The default experiment trains 100 independent Dirichlet NPEs.  Every NPE uses
-100,000 simulations at N=1,000 and is evaluated on 100 datasets generated at
-(A, C, E)=(0.4, 0.3, 0.3), with 2,000 posterior draws per dataset.
+The 100 independently trained Dirichlet NPEs already exist in the model
+directory. Every model was trained from 100,000 simulations at N=1,000. This
+script reloads them and evaluates 500 shared datasets generated at
+(A, C, E)=(0.4, 0.3, 0.3), using 2,000 posterior draws per dataset.
 
-This file is designed for a Slurm array.  One array task runs one replicate::
+This file is designed for a Slurm array. One array task reloads and evaluates
+one existing model without training or modifying it::
 
-    python 10b_fixed_theta_npe_ensemble.py run-one --replicate 1
+    python 10b_fixed_theta_npe_ensemble.py evaluate-one --replicate 1
 
 After all array tasks finish, aggregate their summaries and make model-level
 calibration plots plus dataset-level between-NPE uncertainty plots::
 
     python 10b_fixed_theta_npe_ensemble.py aggregate
 
-Training covariance statistics are simulated directly from their exact
-Wishart distribution.  This is distributionally identical to generating all
-individual Gaussian twin observations and calling ``np.cov(..., ddof=1)``,
-but avoids constructing 200 million observations per NPE.
+Test covariance statistics are simulated directly from their exact Wishart
+distribution. This is distributionally identical to generating all individual
+Gaussian twin observations and calling ``np.cov(..., ddof=1)``.
 """
 
 from __future__ import annotations
@@ -24,20 +25,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pickle
 import shutil
 import sys
 import time
 from pathlib import Path
 
-import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-from sbi.inference import SNPE
-from sbi.neural_nets import posterior_nn
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,21 +42,19 @@ from ace_model import (  # noqa: E402
     COV_FEATURE_NAMES,
     RESULTS_DIR,
     VAR_REDUCTION,
-    DirichletACEPosterior,
-    DirichletALRPrior,
-    ace_to_alr,
+    load_posterior,
     resolve,
 )
 
 
-DEFAULT_OUTPUT_DIR = "fixed_theta_npe_ensemble"
+DEFAULT_MODELS_DIR = "fixed_theta_npe_ensemble"
+DEFAULT_OUTPUT_DIR = "fixed_theta_npe_ensemble_evaluation"
 DEFAULT_REPLICATES = 100
-DEFAULT_TRAINING_SIMULATIONS = 100_000
+DEFAULT_MODEL_SIMULATIONS = 100_000
 DEFAULT_N_PAIRS = 1_000
-DEFAULT_TEST_SIMULATIONS = 100
+DEFAULT_TEST_SIMULATIONS = 500
 DEFAULT_POSTERIOR_DRAWS = 2_000
 DEFAULT_THETA = (0.4, 0.3, 0.3)
-DEFAULT_ALPHA = (1.0, 1.0, 1.0)
 DEFAULT_SEED = 202_609_16
 RMS_POSTERIOR_SE_COLUMN = "sqrt(mean(posterior_var))"
 RMS_SE_RATIO_COLUMN = "sqrt(mean(posterior_var))/empirical_SE"
@@ -128,117 +122,13 @@ def simulate_covariance_features(
     return np.column_stack((mz_var, mz_cov, dz_var, dz_cov)).astype(np.float32)
 
 
-def make_training_data(args, replicate: int) -> tuple[np.ndarray, np.ndarray, int]:
-    """Generate one prior-predictive training corpus."""
-    data_replicate = 0 if args.training_data_mode == "shared" else replicate
-    seed = integer_seed(args.seed, data_replicate, 1)
-    rng = np.random.default_rng(seed)
-    alpha = np.asarray(args.dirichlet_alpha, dtype=np.float64)
-    ace = rng.dirichlet(alpha, size=args.n_training_simulations)
-    ace *= args.total_variance
-    features = simulate_covariance_features(ace, args.n_pairs, rng)
-    return features, ace.astype(np.float32), seed
-
-
-def make_test_data(args, replicate: int) -> tuple[np.ndarray, np.ndarray, int]:
+def make_test_data(args) -> tuple[np.ndarray, np.ndarray, int]:
     """Generate the fixed-theta evaluation datasets."""
-    test_replicate = 0 if args.test_set_mode == "shared" else replicate
-    seed = integer_seed(args.seed, test_replicate, 2)
+    seed = integer_seed(args.seed, 0, 2)
     rng = np.random.default_rng(seed)
     theta = np.asarray(args.theta, dtype=np.float64)
     ace = np.repeat(theta[None, :], args.n_test_simulations, axis=0)
     return simulate_covariance_features(ace, args.n_pairs, rng), ace, seed
-
-
-def resolve_device(requested: str) -> torch.device:
-    if requested != "auto":
-        device = torch.device(requested)
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("--device cuda was requested, but CUDA is unavailable")
-    return device
-
-
-def train_posterior(
-    args,
-    replicate: int,
-    features: np.ndarray,
-    ace: np.ndarray,
-    output_dir: Path,
-):
-    """Fit and save one fixed-N Dirichlet NPE."""
-    split_seed = integer_seed(args.seed, replicate, 3)
-    training_seed = integer_seed(args.seed, replicate, 4)
-    rng = np.random.default_rng(split_seed)
-    indices = rng.permutation(len(features))
-    n_validation = max(1, int(round(args.validation_fraction * len(features))))
-    n_training = len(features) - n_validation
-    train_indices = indices[:n_training]
-    validation_indices = indices[n_training:]
-
-    scaler = StandardScaler().fit(features[train_indices])
-    x_training = scaler.transform(features[train_indices]).astype(np.float32)
-    x_validation = scaler.transform(features[validation_indices]).astype(np.float32)
-    theta = ace_to_alr(ace)
-    theta_all = np.vstack((theta[train_indices], theta[validation_indices]))
-    x_all = np.vstack((x_training, x_validation))
-    joblib.dump(scaler, output_dir / "feature_scaler.pkl")
-
-    device = resolve_device(args.device)
-    torch.manual_seed(training_seed)
-    if device.type == "cuda":
-        torch.cuda.manual_seed_all(training_seed)
-
-    prior = DirichletALRPrior(args.dirichlet_alpha, device=str(device))
-    density_builder = posterior_nn(
-        model=args.flow_type,
-        embedding_net=nn.Identity(),
-        hidden_features=args.flow_hidden,
-        num_transforms=args.flow_transforms,
-        z_score_theta="independent",
-        z_score_x="independent",
-    )
-    inference = SNPE(
-        prior=prior,
-        density_estimator=density_builder,
-        device=str(device),
-    )
-    inference.append_simulations(
-        theta=torch.as_tensor(theta_all, dtype=torch.float32),
-        x=torch.as_tensor(x_all, dtype=torch.float32),
-    )
-    estimator = inference.train(
-        training_batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        max_num_epochs=args.epochs,
-        stop_after_epochs=args.stop_after_epochs,
-        validation_fraction=n_validation / len(features),
-        show_train_summary=True,
-    )
-    latent_posterior = inference.build_posterior(estimator)
-    latent_posterior.to("cpu")
-    posterior = DirichletACEPosterior(
-        latent_posterior, total_variance=args.total_variance
-    )
-
-    torch.save(
-        {
-            "density_estimator_state_dict": estimator.state_dict(),
-            "prior_type": "exact_dirichlet_ALR",
-            "dirichlet_alpha": list(args.dirichlet_alpha),
-            "total_variance": args.total_variance,
-            "theta_parameterization": "ALR: log(A/E), log(C/E); E reconstructed",
-        },
-        output_dir / "density_estimator.pt",
-    )
-    with open(output_dir / "posterior.pkl", "wb") as handle:
-        pickle.dump(posterior, handle)
-    return posterior, scaler, device, n_training, n_validation, training_seed
 
 
 def evaluate_posterior(
@@ -299,19 +189,74 @@ def evaluate_posterior(
     return raw, pd.DataFrame(summary_rows)
 
 
-def run_one(args) -> None:
+def validate_saved_model(loaded: dict, replicate: int, args) -> dict:
+    """Check that a saved STEP 10b model matches the requested evaluation."""
+    config = loaded["config"]
+    if config.get("model_type") != "NPE_fixed_theta_ensemble":
+        raise ValueError(
+            f"Replicate {replicate}: source is not a STEP 10b ensemble model"
+        )
+    if int(config.get("replicate", -1)) != replicate:
+        raise ValueError(
+            f"Replicate {replicate}: source config records replicate "
+            f"{config.get('replicate')}"
+        )
+    if int(config.get("fixed_n_pairs", -1)) != args.n_pairs:
+        raise ValueError(
+            f"Replicate {replicate}: source model used N="
+            f"{config.get('fixed_n_pairs')}, requested N={args.n_pairs}"
+        )
+    if config.get("simulation_scheme") != "dirichlet":
+        raise ValueError(f"Replicate {replicate}: source model is not Dirichlet")
+    observed_simulations = int(config.get("n_training_simulations_total", -1))
+    if observed_simulations != DEFAULT_MODEL_SIMULATIONS:
+        raise ValueError(
+            f"Replicate {replicate}: source model used "
+            f"{config.get('n_training_simulations_total')} simulations; expected "
+            f"{DEFAULT_MODEL_SIMULATIONS:,}"
+        )
+    if list(loaded["feature_cols"]) != list(COV_FEATURE_NAMES):
+        raise ValueError(
+            f"Replicate {replicate}: source model features are "
+            f"{loaded['feature_cols']}; expected {list(COV_FEATURE_NAMES)}"
+        )
+    if list(loaded["param_names"]) != list(ACE_PARAM_NAMES):
+        raise ValueError(
+            f"Replicate {replicate}: source parameters are "
+            f"{loaded['param_names']}; expected {list(ACE_PARAM_NAMES)}"
+        )
+    return config
+
+
+def evaluate_one(args) -> None:
+    """Reload one trained NPE and evaluate it without modifying the model."""
     replicate = args.replicate
+    models_root = resolve(args.models_dir, RESULTS_DIR)
     output_root = resolve(args.output_dir, RESULTS_DIR)
+    if models_root.resolve() == output_root.resolve():
+        raise ValueError(
+            "--output_dir must differ from --models_dir so saved models are "
+            "never overwritten"
+        )
+
+    model_dir = models_root / f"replicate_{replicate:03d}"
+    if not (model_dir / "COMPLETE").exists():
+        raise FileNotFoundError(
+            f"Replicate {replicate}: completed source model not found in {model_dir}"
+        )
+    loaded = load_posterior(model_dir)
+    source_config = validate_saved_model(loaded, replicate, args)
+
     output_root.mkdir(parents=True, exist_ok=True)
     final_dir = output_root / f"replicate_{replicate:03d}"
     complete_path = final_dir / "COMPLETE"
     if complete_path.exists() and not args.force:
-        print(f"Replicate {replicate} is already complete: {final_dir}")
+        print(f"Replicate {replicate} evaluation is already complete: {final_dir}")
         return
     if final_dir.exists():
         if not args.force:
             raise FileExistsError(
-                f"Incomplete output directory already exists: {final_dir}. "
+                f"Incomplete evaluation directory already exists: {final_dir}. "
                 "Inspect it, then rerun with --force to replace it."
             )
         shutil.rmtree(final_dir)
@@ -320,70 +265,48 @@ def run_one(args) -> None:
     work_dir.mkdir(parents=False, exist_ok=False)
     start = time.perf_counter()
     try:
-        print(f"Replicate {replicate}: generating training simulations ...")
-        training_features, training_ace, training_data_seed = make_training_data(
-            args, replicate
-        )
+        print(f"Replicate {replicate}: loaded model from {model_dir}")
         print(
-            f"Replicate {replicate}: training on "
-            f"{args.n_training_simulations:,} simulations ..."
+            f"Replicate {replicate}: generating and evaluating "
+            f"{args.n_test_simulations:,} shared fixed-theta datasets ..."
         )
-        posterior, scaler, device, n_training, n_validation, training_seed = (
-            train_posterior(
-                args,
-                replicate,
-                training_features,
-                training_ace,
-                work_dir,
-            )
-        )
-        # Release the largest arrays before posterior evaluation.
-        del training_features, training_ace
-
-        print(f"Replicate {replicate}: generating and evaluating fixed-theta data ...")
-        test_features, _, test_data_seed = make_test_data(args, replicate)
+        test_features, _, test_data_seed = make_test_data(args)
         raw, summary = evaluate_posterior(
-            args, replicate, posterior, scaler, test_features
+            args,
+            replicate,
+            loaded["posterior"],
+            loaded["scaler"],
+            test_features,
         )
         raw.to_csv(work_dir / "fixed_theta_posterior_results.csv", index=False)
         summary.to_csv(work_dir / "fixed_theta_summary.csv", index=False)
 
         elapsed_seconds = time.perf_counter() - start
-        config = {
-            "experiment": "fixed_theta_npe_ensemble",
-            "model_type": "NPE_fixed_theta_ensemble",
+        evaluation_config = {
+            "experiment": "fixed_theta_npe_ensemble_reevaluation",
+            "model_type": "NPE_fixed_theta_ensemble_evaluation",
             "simulation_scheme": "dirichlet",
             "replicate": replicate,
             "n_replicates_planned": args.n_replicates,
-            "n_training_simulations_total": args.n_training_simulations,
-            "training_rows": n_training,
-            "validation_rows": n_validation,
-            "training_data_mode": args.training_data_mode,
-            "test_set_mode": args.test_set_mode,
+            "source_model_dir": str(model_dir),
+            "source_training_simulations_total": source_config.get(
+                "n_training_simulations_total"
+            ),
+            "source_training_rows": source_config.get("training_rows"),
+            "source_validation_rows": source_config.get("validation_rows"),
+            "test_set_mode": "shared",
             "fixed_n_pairs": args.n_pairs,
             "n_is_model_feature": False,
             "theta": dict(zip(ACE_PARAM_NAMES, args.theta)),
             "n_test_simulations": args.n_test_simulations,
             "n_posterior_draws": args.n_posterior_draws,
-            "dirichlet_alpha": list(args.dirichlet_alpha),
-            "total_variance": args.total_variance,
-            "simulation_method": "exact vectorized Wishart_2 Bartlett decomposition",
             "feature_cols": list(COV_FEATURE_NAMES),
             "param_names": list(ACE_PARAM_NAMES),
             "var_feature": VAR_REDUCTION,
-            "flow_type": args.flow_type,
-            "flow_hidden": args.flow_hidden,
-            "flow_transforms": args.flow_transforms,
-            "batch_size": args.batch_size,
-            "learning_rate": args.learning_rate,
-            "max_epochs": args.epochs,
-            "stop_after_epochs": args.stop_after_epochs,
-            "device": str(device),
             "base_seed": args.seed,
-            "training_data_seed": training_data_seed,
-            "training_seed": training_seed,
             "test_data_seed": test_data_seed,
             "elapsed_seconds": elapsed_seconds,
+            "retrained": False,
             "definition": {
                 "SE(mean(theta))": (
                     "sample SD (ddof=1) of posterior means over fixed-theta "
@@ -400,12 +323,12 @@ def run_one(args) -> None:
             },
         }
         with open(work_dir / "config.json", "w") as handle:
-            json.dump(config, handle, indent=2)
-        (work_dir / "COMPLETE").write_text("complete\n")
+            json.dump(evaluation_config, handle, indent=2)
+        (work_dir / "COMPLETE").write_text("evaluation complete\n")
         work_dir.rename(final_dir)
         print(
-            f"Replicate {replicate} complete in {elapsed_seconds / 60:.1f} min: "
-            f"{final_dir}"
+            f"Replicate {replicate} evaluation complete in "
+            f"{elapsed_seconds / 60:.1f} min: {final_dir}"
         )
     except Exception:
         print(f"Partial files retained for diagnosis in {work_dir}", file=sys.stderr)
@@ -944,8 +867,11 @@ def aggregate(args) -> None:
     print(f"Dataset B/W:     {dataset_ratio_path}")
 
 
-def add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--output_dir", default=DEFAULT_OUTPUT_DIR)
+def add_common_arguments(
+    parser: argparse.ArgumentParser,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+) -> None:
+    parser.add_argument("--output_dir", default=output_dir)
     parser.add_argument("--n_replicates", type=int, default=DEFAULT_REPLICATES)
     parser.add_argument("--n_pairs", type=int, default=DEFAULT_N_PAIRS)
     parser.add_argument("--theta", type=float, nargs=3, default=list(DEFAULT_THETA))
@@ -966,40 +892,26 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run-one", help="Train/evaluate one NPE")
-    add_common_arguments(run_parser)
-    run_parser.add_argument("--replicate", type=int, required=True)
-    run_parser.add_argument(
-        "--n_training_simulations", type=int, default=DEFAULT_TRAINING_SIMULATIONS
+    evaluate_parser = subparsers.add_parser(
+        "evaluate-one",
+        help="Reload and evaluate one trained NPE without retraining",
     )
-    run_parser.add_argument(
-        "--n_test_simulations", type=int, default=DEFAULT_TEST_SIMULATIONS
+    add_common_arguments(evaluate_parser)
+    evaluate_parser.add_argument("--replicate", type=int, required=True)
+    evaluate_parser.add_argument(
+        "--models_dir",
+        default=DEFAULT_MODELS_DIR,
+        help="Directory containing the trained replicate directories",
     )
-    run_parser.add_argument(
+    evaluate_parser.add_argument(
+        "--n_test_simulations",
+        type=int,
+        default=DEFAULT_TEST_SIMULATIONS,
+    )
+    evaluate_parser.add_argument(
         "--n_posterior_draws", type=int, default=DEFAULT_POSTERIOR_DRAWS
     )
-    run_parser.add_argument(
-        "--training_data_mode", choices=("independent", "shared"), default="independent"
-    )
-    run_parser.add_argument(
-        "--test_set_mode", choices=("shared", "independent"), default="shared"
-    )
-    run_parser.add_argument(
-        "--dirichlet_alpha", type=float, nargs=3, default=list(DEFAULT_ALPHA)
-    )
-    run_parser.add_argument("--total_variance", type=float, default=1.0)
-    run_parser.add_argument("--validation_fraction", type=float, default=0.15)
-    run_parser.add_argument("--epochs", type=int, default=500)
-    run_parser.add_argument("--stop_after_epochs", type=int, default=50)
-    run_parser.add_argument("--batch_size", type=int, default=1024)
-    run_parser.add_argument("--learning_rate", type=float, default=5e-4)
-    run_parser.add_argument(
-        "--flow_type", choices=("nsf", "maf", "maf_rqs", "mdn"), default="nsf"
-    )
-    run_parser.add_argument("--flow_hidden", type=int, default=64)
-    run_parser.add_argument("--flow_transforms", type=int, default=5)
-    run_parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
-    run_parser.add_argument("--force", action="store_true")
+    evaluate_parser.add_argument("--force", action="store_true")
 
     aggregate_parser = subparsers.add_parser(
         "aggregate", help="Combine completed replicates and plot"
@@ -1007,34 +919,30 @@ def parse_args():
     add_common_arguments(aggregate_parser)
 
     args = parser.parse_args()
-    selected_parser = run_parser if args.command == "run-one" else aggregate_parser
+    parser_by_command = {
+        "evaluate-one": evaluate_parser,
+        "aggregate": aggregate_parser,
+    }
+    selected_parser = parser_by_command[args.command]
     validate_common(selected_parser, args)
-    if args.command == "run-one":
+    if args.command == "evaluate-one":
         if not 1 <= args.replicate <= args.n_replicates:
-            run_parser.error("--replicate must be between 1 and --n_replicates")
-        if args.n_training_simulations < 20:
-            run_parser.error("--n_training_simulations must be at least 20")
+            selected_parser.error(
+                "--replicate must be between 1 and --n_replicates"
+            )
         if args.n_test_simulations < 2 or args.n_posterior_draws < 2:
-            run_parser.error("test simulations and posterior draws must be at least 2")
-        if not 0 < args.validation_fraction < 1:
-            run_parser.error("--validation_fraction must be between 0 and 1")
-        if any(alpha <= 0 for alpha in args.dirichlet_alpha):
-            run_parser.error("--dirichlet_alpha values must be positive")
-        if args.total_variance <= 0:
-            run_parser.error("--total_variance must be positive")
-        if not np.isclose(sum(args.theta), args.total_variance):
-            run_parser.error("sum(--theta) must equal --total_variance")
-        if min(args.epochs, args.stop_after_epochs, args.batch_size) <= 0:
-            run_parser.error("epochs, patience, and batch size must be positive")
+            selected_parser.error(
+                "test simulations and posterior draws must be at least 2"
+            )
     return args
 
 
 def main() -> None:
     args = parse_args()
-    if args.command == "run-one":
+    if args.command == "evaluate-one":
         cpu_count = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
         torch.set_num_threads(max(1, cpu_count))
-        run_one(args)
+        evaluate_one(args)
     else:
         aggregate(args)
 
