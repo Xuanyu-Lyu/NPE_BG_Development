@@ -578,27 +578,9 @@ def save_dataset_model_uncertainty_scatter(
                 color="0.35",
                 linewidth=1.2,
             )
-        elif y.min() > x.max():
-            axis.text(
-                0.03,
-                0.04,
-                "All datasets: sqrt(W_j) > sqrt(B_j)",
-                transform=axis.transAxes,
-                fontsize=9,
-                color="0.35",
-            )
-        elif x.min() > y.max():
-            axis.text(
-                0.03,
-                0.04,
-                "All datasets: sqrt(B_j) > sqrt(W_j)",
-                transform=axis.transAxes,
-                fontsize=9,
-                color="0.35",
-            )
         axis.set_title(f"{parameter} (true {theta[column]:g})")
-        axis.set_xlabel("sqrt(B_j): between-NPE SD of posterior means")
-        axis.set_ylabel("sqrt(W_j): RMS posterior SD across NPEs")
+        axis.set_xlabel("SD of posterior means across NPEs")
+        axis.set_ylabel("RMS posterior SD across NPEs")
         axis.grid(alpha=0.22, which="both")
 
     n_models = int(dataset_summary["n_models"].drop_duplicates().item())
