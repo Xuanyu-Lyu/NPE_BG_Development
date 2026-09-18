@@ -455,16 +455,16 @@ def save_ensemble_plot(
         axis.set_aspect("equal", adjustable="box")
         axis.set_title(f"{parameter} (true {theta[column]:g})")
         axis.set_xlabel(
-            f"sqrt(B_m): SD of posterior means across {n_test_simulations} datasets"
+            f"SD of posterior means across {n_test_simulations} datasets"
         )
-        axis.set_ylabel("sqrt(W_m): RMS posterior SD")
+        axis.set_ylabel("RMS posterior SD across datasets")
         axis.grid(alpha=0.22)
 
     fig.suptitle(
         f"{summary['replicate'].nunique()} independently trained NPEs "
         f"with N pairs={n_pairs}\n"
-        "Each point is one NPE; dashed line: "
-        "sqrt(W_m) = sqrt(B_m)"
+        "Each point is one NPE; dashed line: reported posterior SD = "
+        "empirical SD"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.91))
     fig.savefig(path, dpi=300, bbox_inches="tight")
@@ -658,7 +658,7 @@ def save_dataset_model_uncertainty_ratio_boxplot(
             linestyle="--",
             color="0.35",
             linewidth=1.3,
-            label="Between-NPE variance = posterior variance",
+            label="Between-NPE variance = mean posterior variance",
             zorder=1,
         )
         axis.legend(frameon=False, loc="best")
@@ -666,7 +666,7 @@ def save_dataset_model_uncertainty_ratio_boxplot(
         axis.text(
             0.99,
             0.98,
-            "B_j / W_j = 1 lies above the displayed range",
+            "Equal between-NPE and posterior variance lies above this range",
             transform=axis.transAxes,
             ha="right",
             va="top",
@@ -677,7 +677,7 @@ def save_dataset_model_uncertainty_ratio_boxplot(
         axis.text(
             0.99,
             0.02,
-            "B_j / W_j = 1 lies below the displayed range",
+            "Equal between-NPE and posterior variance lies below this range",
             transform=axis.transAxes,
             ha="right",
             va="bottom",
@@ -690,7 +690,7 @@ def save_dataset_model_uncertainty_ratio_boxplot(
     ]
     axis.set_xticks(range(1, len(ACE_PARAM_NAMES) + 1), tick_labels)
     axis.set_xlabel("ACE parameter")
-    axis.set_ylabel("B_j / W_j (log scale)")
+    axis.set_ylabel("Between-NPE variance / mean posterior variance (log scale)")
     axis.set_title(
         f"Between-NPE model variance relative to posterior variance; "
         f"N pairs={n_pairs}\n"
@@ -769,11 +769,11 @@ def save_se_ratio_boxplot(
     ]
     axis.set_xticks(range(1, len(ACE_PARAM_NAMES) + 1), tick_labels)
     axis.set_xlabel("ACE parameter")
-    axis.set_ylabel("sqrt(mean posterior variance) / empirical SE")
+    axis.set_ylabel("RMS posterior SD / SD of posterior means")
     axis.set_title(
         f"{summary['replicate'].nunique()} Independently trained NPE "
         f"with N pairs={n_pairs}\n"
-        "RMS posterior-to-empirical SE ratio across models"
+        "Posterior-to-empirical SD ratio across NPEs"
     )
     axis.grid(axis="y", alpha=0.22)
     axis.legend(frameon=False, loc="best")
