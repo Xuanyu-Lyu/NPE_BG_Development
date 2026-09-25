@@ -233,11 +233,12 @@ def calculate_results(
     blocks: list[np.ndarray],
     n_posterior_draws: int,
     rng: np.random.Generator,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Calculate primary block components and detailed conditional diagnostics."""
     component_rows: list[dict] = []
     detail_rows: list[dict] = []
     assignment_rows: list[dict] = []
+    point_rows: list[dict] = []
     n_models = next(iter(means.values())).shape[0]
 
     for block_number, positions in enumerate(blocks, start=1):
@@ -259,6 +260,18 @@ def calculate_results(
             total_paired = float(paired_values.var(ddof=1))
             decomposition = decompose_block(
                 block_values, block_sds, n_posterior_draws
+            )
+            mc_cell_variances = (
+                np.square(block_sds) / float(n_posterior_draws)
+            )
+            grand_mean = block_values.mean()
+            model_means = block_values.mean(axis=1)
+            dataset_means = block_values.mean(axis=0)
+            residuals = (
+                block_values
+                - model_means[:, None]
+                - dataset_means[None, :]
+                + grand_mean
             )
 
             primary_values = {
@@ -285,26 +298,62 @@ def calculate_results(
                     }
                 )
 
+            point_rows.append(
+                {
+                    "block": block_number,
+                    "parameter": parameter,
+                    "component": "Total",
+                    "unit_type": "paired_block",
+                    "model": np.nan,
+                    "test_simulation": np.nan,
+                    "variance": total_paired,
+                }
+            )
+
             # These conditional distributions are useful diagnostics but are
             # not the pure random-effects components plotted in the main figures.
             for local_index, dataset_position in enumerate(positions):
+                conditional_model_variance = float(
+                    block_values[:, local_index].var(ddof=1)
+                )
                 detail_rows.append(
                     {
                         "block": block_number,
                         "parameter": parameter,
                         "diagnostic": "model_variance_conditional_on_dataset",
                         "unit": int(dataset_ids[dataset_position]),
-                        "variance": float(block_values[:, local_index].var(ddof=1)),
+                        "variance": conditional_model_variance,
+                    }
+                )
+                point_rows.append(
+                    {
+                        "block": block_number,
+                        "parameter": parameter,
+                        "component": "Model",
+                        "unit_type": "dataset",
+                        "model": np.nan,
+                        "test_simulation": int(dataset_ids[dataset_position]),
+                        "variance": (
+                            conditional_model_variance
+                            - decomposition["Remainder"]
+                            - float(mc_cell_variances[:, local_index].mean())
+                        ),
                     }
                 )
             for model_index in range(n_models):
+                conditional_dataset_variance = float(
+                    block_values[model_index, :].var(ddof=1)
+                )
+                mean_model_mc_variance = float(
+                    mc_cell_variances[model_index, :].mean()
+                )
                 detail_rows.append(
                     {
                         "block": block_number,
                         "parameter": parameter,
                         "diagnostic": "dataset_variance_conditional_on_model",
                         "unit": model_index + 1,
-                        "variance": float(block_values[model_index, :].var(ddof=1)),
+                        "variance": conditional_dataset_variance,
                     }
                 )
                 detail_rows.append(
@@ -313,11 +362,52 @@ def calculate_results(
                         "parameter": parameter,
                         "diagnostic": "mean_MC_variance_within_model",
                         "unit": model_index + 1,
+                        "variance": mean_model_mc_variance,
+                    }
+                )
+                point_rows.append(
+                    {
+                        "block": block_number,
+                        "parameter": parameter,
+                        "component": "Dataset",
+                        "unit_type": "model",
+                        "model": model_index + 1,
+                        "test_simulation": np.nan,
+                        "variance": (
+                            conditional_dataset_variance
+                            - decomposition["Remainder"]
+                            - mean_model_mc_variance
+                        ),
+                    }
+                )
+                point_rows.append(
+                    {
+                        "block": block_number,
+                        "parameter": parameter,
+                        "component": "Remainder",
+                        "unit_type": "model",
+                        "model": model_index + 1,
+                        "test_simulation": np.nan,
+                        "variance": (
+                            float(residuals[model_index, :].var(ddof=1))
+                            - mean_model_mc_variance
+                        ),
+                    }
+                )
+                paired_local_index = int(pairing[model_index])
+                paired_dataset_position = int(positions[paired_local_index])
+                point_rows.append(
+                    {
+                        "block": block_number,
+                        "parameter": parameter,
+                        "component": "Posterior-mean MC",
+                        "unit_type": "paired_model_dataset",
+                        "model": model_index + 1,
+                        "test_simulation": int(
+                            dataset_ids[paired_dataset_position]
+                        ),
                         "variance": float(
-                            np.mean(
-                                np.square(block_sds[model_index, :])
-                                / float(n_posterior_draws)
-                            )
+                            mc_cell_variances[model_index, paired_local_index]
                         ),
                     }
                 )
@@ -331,7 +421,14 @@ def calculate_results(
     ).reset_index(drop=True)
     details = pd.DataFrame(detail_rows)
     assignments = pd.DataFrame(assignment_rows)
-    return components, details, assignments
+    point_estimates = pd.DataFrame(point_rows)
+    point_estimates["component"] = pd.Categorical(
+        point_estimates["component"], categories=COMPONENT_ORDER, ordered=True
+    )
+    point_estimates = point_estimates.sort_values(
+        ["parameter", "block", "component"]
+    ).reset_index(drop=True)
+    return components, details, assignments, point_estimates
 
 
 def component_summary(
@@ -460,32 +557,50 @@ def save_boxplot(
 
 
 def save_block_point_plot(
-    components: pd.DataFrame,
+    point_estimates: pd.DataFrame,
     output_path: Path,
     value_column: str,
     y_label: str,
     title_label: str,
 ) -> None:
-    n_blocks = int(components["block"].nunique())
+    n_blocks = int(point_estimates["block"].nunique())
+    non_total_counts = (
+        point_estimates.loc[point_estimates["component"] != "Total"]
+        .groupby(["parameter", "block", "component"], observed=True)
+        .size()
+    )
+    points_per_component = int(non_total_counts.max())
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), sharey=False)
     positions = np.arange(len(COMPONENT_ORDER))
     block_colors = plt.get_cmap("tab20", n_blocks)(np.arange(n_blocks))
+    block_offsets = np.linspace(-0.24, 0.24, n_blocks)
+    rng = np.random.default_rng(20260926)
     for axis, parameter in zip(axes, ACE_PARAM_NAMES):
-        selected = components.loc[components["parameter"] == parameter]
-        for color, block in zip(block_colors, sorted(selected["block"].unique())):
-            one_block = selected.loc[selected["block"] == block].set_index(
-                "component"
-            ).reindex(COMPONENT_ORDER)
-            axis.plot(
-                positions,
-                one_block[value_column].to_numpy(dtype=float),
-                marker="o",
-                markersize=5.5,
-                linewidth=1.0,
-                alpha=0.82,
-                color=color,
-                label=f"Block {block}",
-            )
+        selected = point_estimates.loc[point_estimates["parameter"] == parameter]
+        for block_index, (color, block) in enumerate(
+            zip(block_colors, sorted(selected["block"].unique()))
+        ):
+            one_block = selected.loc[selected["block"] == block]
+            for component_index, component in enumerate(COMPONENT_ORDER):
+                values = one_block.loc[
+                    one_block["component"] == component, value_column
+                ].dropna().to_numpy(dtype=float)
+                if not len(values):
+                    continue
+                jitter = rng.uniform(-0.035, 0.035, size=len(values))
+                is_total = component == "Total"
+                axis.scatter(
+                    component_index + block_offsets[block_index] + jitter,
+                    values,
+                    marker="D" if is_total else "o",
+                    s=48 if is_total else 13,
+                    alpha=0.90 if is_total else 0.30,
+                    color=color,
+                    edgecolor="white" if is_total else "none",
+                    linewidth=0.45 if is_total else 0,
+                    label=f"Block {block}" if component_index == 0 else None,
+                    zorder=4 if is_total else 3,
+                )
         axis.axhline(0, color="0.35", linewidth=0.9)
         axis.set_xticks(positions, COMPONENT_ORDER, rotation=28, ha="right")
         axis.set_title(parameter, color=PARAMETER_COLORS[parameter], fontweight="bold")
@@ -495,7 +610,8 @@ def save_block_point_plot(
     axes[0].legend(frameon=False, fontsize=8)
     fig.suptitle(
         f"Fixed-theta {title_label} by block\n"
-        "Colors connect estimates calculated from the same dataset block"
+        f"Diamonds: one Total per block; circles: {points_per_component} "
+        "estimates per block and component"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.90))
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -531,7 +647,7 @@ def main() -> None:
     )
     rng = np.random.default_rng(args.seed)
     blocks = make_blocks(dataset_ids, args.n_replicates, args.n_blocks, rng)
-    components, details, assignments = calculate_results(
+    components, details, assignments, point_estimates = calculate_results(
         means,
         posterior_sds,
         dataset_ids,
@@ -544,6 +660,11 @@ def main() -> None:
     components.loc[nonnegative, "standard_error"] = np.sqrt(
         components.loc[nonnegative, "variance"]
     )
+    point_estimates["standard_error"] = np.nan
+    nonnegative_points = point_estimates["variance"] >= 0
+    point_estimates.loc[nonnegative_points, "standard_error"] = np.sqrt(
+        point_estimates.loc[nonnegative_points, "variance"]
+    )
     variance_summary = component_summary(components, "variance")
     se_summary = component_summary(components, "standard_error")
 
@@ -551,11 +672,13 @@ def main() -> None:
     variance_summary_path = output_dir / "variance_component_summary.csv"
     se_summary_path = output_dir / "se_component_summary.csv"
     details_path = output_dir / "conditional_variance_diagnostics.csv"
+    point_estimates_path = output_dir / "component_point_estimates.csv"
     assignments_path = output_dir / "block_pairing_assignments.csv"
     components.to_csv(components_path, index=False)
     variance_summary.to_csv(variance_summary_path, index=False)
     se_summary.to_csv(se_summary_path, index=False)
     details.to_csv(details_path, index=False)
+    point_estimates.to_csv(point_estimates_path, index=False)
     assignments.to_csv(assignments_path, index=False)
 
     variance_bar_path = output_dir / "variance_components_mean_bar.png"
@@ -576,7 +699,7 @@ def main() -> None:
         "variance decomposition",
     )
     save_block_point_plot(
-        components,
+        point_estimates,
         variance_points_path,
         "variance",
         "Variance",
@@ -601,7 +724,7 @@ def main() -> None:
         "SE-scale decomposition",
     )
     save_block_point_plot(
-        components,
+        point_estimates,
         se_points_path,
         "standard_error",
         "SE = sqrt(variance)",
@@ -631,9 +754,11 @@ def main() -> None:
         "mc_variance_method": "mean(posterior_sd^2 / n_posterior_draws)",
         "negative_component_estimates": negative.to_dict(orient="records"),
         "notes": [
-            f"Primary figures use {args.n_blocks} comparable block-level estimates per component.",
+            f"Bar and box figures use {args.n_blocks} comparable block-level estimates per component.",
             "Remainder primarily represents model-by-dataset interaction.",
             "Conditional diagnostic rows are not pure variance components.",
+            "Point figures show one Total estimate and 100 estimates for every other component in each block.",
+            "Each posterior-mean MC point is posterior_sd^2 / n_posterior_draws for one paired model-dataset cell.",
             "A negative method-of-moments component is retained rather than truncated.",
             "Negative variance estimates are missing in SE-scale tables and figures because they cannot be square-rooted.",
         ],
@@ -647,6 +772,7 @@ def main() -> None:
     print(f"Variance summary: {variance_summary_path}")
     print(f"SE summary:       {se_summary_path}")
     print(f"Diagnostics:      {details_path}")
+    print(f"Point estimates:  {point_estimates_path}")
     print(f"Variance figures: {variance_bar_path}, {variance_boxplot_path}")
     print(f"                  {variance_points_path}")
     print(f"SE figures:       {se_bar_path}, {se_boxplot_path}")
