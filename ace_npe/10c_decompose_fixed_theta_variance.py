@@ -6,13 +6,14 @@ randomly divided into five blocks of 100.  Within each block and ACE parameter,
 the observed posterior mean is represented as
 
     mean[m, j] = grand mean + model[m] + dataset[j]
-                 + model-by-dataset[m, j] + posterior-sampling MC error.
+                 + remainder[m, j] + posterior-sampling MC error.
 
 A balanced two-way random-effects method-of-moments calculation estimates the
-model, dataset, and interaction variance components.  The posterior-mean Monte
-Carlo variance is estimated as posterior_variance / n_posterior_draws.  A
-one-to-one random model/dataset matching supplies the requested independent
-estimate of total variance in every block.
+model and dataset variance components.  The remainder primarily contains the
+model-by-dataset interaction.  The posterior-mean Monte Carlo variance is
+estimated as posterior_variance / n_posterior_draws.  A one-to-one random
+model/dataset matching supplies the requested independent estimate of total
+variance in every block.
 
 No NPE is retrained and no new posterior samples are required.
 """
@@ -38,17 +39,17 @@ DEFAULT_POSTERIOR_DRAWS = 2_000
 DEFAULT_SEED = 202_609_24
 
 COMPONENT_ORDER = [
-    "Total (paired)",
+    "Total",
     "Model",
     "Dataset",
-    "Interaction",
+    "Remainder",
     "Posterior-mean MC",
 ]
 COMPONENT_COLORS = {
-    "Total (paired)": "#4c4c4c",
+    "Total": "#4c4c4c",
     "Model": "#4c78a8",
     "Dataset": "#f58518",
-    "Interaction": "#54a24b",
+    "Remainder": "#54a24b",
     "Posterior-mean MC": "#b279a2",
 }
 PARAMETER_COLORS = {"A": "#1f77b4", "C": "#ff7f0e", "E": "#2ca02c"}
@@ -207,17 +208,17 @@ def decompose_block(
     )
     model_variance = float((ms_model - ms_interaction) / n_datasets)
     dataset_variance = float((ms_dataset - ms_interaction) / n_models)
-    interaction_variance = float(ms_interaction - mc_variance)
+    remainder_variance = float(ms_interaction - mc_variance)
 
     return {
         "Model": model_variance,
         "Dataset": dataset_variance,
-        "Interaction": interaction_variance,
+        "Remainder": remainder_variance,
         "Posterior-mean MC": mc_variance,
         "component_sum": (
             model_variance
             + dataset_variance
-            + interaction_variance
+            + remainder_variance
             + mc_variance
         ),
         "crossed_observed_variance": float(values.var(ddof=1)),
@@ -261,7 +262,7 @@ def calculate_results(
             )
 
             primary_values = {
-                "Total (paired)": total_paired,
+                "Total": total_paired,
                 **{name: decomposition[name] for name in COMPONENT_ORDER[1:]},
             }
             for component, value in primary_values.items():
@@ -333,9 +334,12 @@ def calculate_results(
     return components, details, assignments
 
 
-def component_summary(components: pd.DataFrame) -> pd.DataFrame:
+def component_summary(
+    components: pd.DataFrame,
+    value_column: str,
+) -> pd.DataFrame:
     summary = (
-        components.groupby(["parameter", "component"], observed=True)["variance"]
+        components.groupby(["parameter", "component"], observed=True)[value_column]
         .agg(
             n_blocks="count",
             mean="mean",
@@ -350,8 +354,13 @@ def component_summary(components: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
-def save_bar_plot(summary: pd.DataFrame, output_path: Path) -> None:
-    n_blocks = int(summary["n_blocks"].drop_duplicates().item())
+def save_bar_plot(
+    summary: pd.DataFrame,
+    output_path: Path,
+    n_blocks: int,
+    y_label: str,
+    title_label: str,
+) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), sharey=False)
     positions = np.arange(len(COMPONENT_ORDER))
     for axis, parameter in zip(axes, ACE_PARAM_NAMES):
@@ -373,11 +382,11 @@ def save_bar_plot(summary: pd.DataFrame, output_path: Path) -> None:
         axis.axhline(0, color="0.35", linewidth=0.9)
         axis.set_xticks(positions, COMPONENT_ORDER, rotation=28, ha="right")
         axis.set_title(parameter, color=PARAMETER_COLORS[parameter], fontweight="bold")
-        axis.set_ylabel("Variance")
+        axis.set_ylabel(y_label)
         axis.grid(axis="y", alpha=0.22)
         axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     fig.suptitle(
-        f"Fixed-theta variance decomposition: mean across {n_blocks} blocks\n"
+        f"Fixed-theta {title_label}: mean across {n_blocks} blocks\n"
         "Error bars are ±1 SD across blocks"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.90))
@@ -385,7 +394,13 @@ def save_bar_plot(summary: pd.DataFrame, output_path: Path) -> None:
     plt.close(fig)
 
 
-def save_boxplot(components: pd.DataFrame, output_path: Path) -> None:
+def save_boxplot(
+    components: pd.DataFrame,
+    output_path: Path,
+    value_column: str,
+    y_label: str,
+    title_label: str,
+) -> None:
     n_blocks = int(components["block"].nunique())
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), sharey=False)
     positions = np.arange(1, len(COMPONENT_ORDER) + 1)
@@ -393,11 +408,19 @@ def save_boxplot(components: pd.DataFrame, output_path: Path) -> None:
     for axis, parameter in zip(axes, ACE_PARAM_NAMES):
         selected = components.loc[components["parameter"] == parameter]
         values = [
-            selected.loc[selected["component"] == name, "variance"].to_numpy()
+            selected.loc[selected["component"] == name, value_column]
+            .dropna()
+            .to_numpy()
             for name in COMPONENT_ORDER
         ]
+        boxplot_values = [
+            component_values
+            if len(component_values)
+            else np.asarray([np.nan], dtype=float)
+            for component_values in values
+        ]
         boxes = axis.boxplot(
-            values,
+            boxplot_values,
             positions=positions,
             widths=0.52,
             patch_artist=True,
@@ -424,11 +447,11 @@ def save_boxplot(components: pd.DataFrame, output_path: Path) -> None:
         axis.axhline(0, color="0.35", linewidth=0.9)
         axis.set_xticks(positions, COMPONENT_ORDER, rotation=28, ha="right")
         axis.set_title(parameter, color=PARAMETER_COLORS[parameter], fontweight="bold")
-        axis.set_ylabel("Variance")
+        axis.set_ylabel(y_label)
         axis.grid(axis="y", alpha=0.22)
         axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     fig.suptitle(
-        f"Fixed-theta variance decomposition across {n_blocks} dataset blocks\n"
+        f"Fixed-theta {title_label} across {n_blocks} dataset blocks\n"
         "Each point is one block-level estimate"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.90))
@@ -436,7 +459,13 @@ def save_boxplot(components: pd.DataFrame, output_path: Path) -> None:
     plt.close(fig)
 
 
-def save_block_point_plot(components: pd.DataFrame, output_path: Path) -> None:
+def save_block_point_plot(
+    components: pd.DataFrame,
+    output_path: Path,
+    value_column: str,
+    y_label: str,
+    title_label: str,
+) -> None:
     n_blocks = int(components["block"].nunique())
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), sharey=False)
     positions = np.arange(len(COMPONENT_ORDER))
@@ -449,7 +478,7 @@ def save_block_point_plot(components: pd.DataFrame, output_path: Path) -> None:
             ).reindex(COMPONENT_ORDER)
             axis.plot(
                 positions,
-                one_block["variance"].to_numpy(dtype=float),
+                one_block[value_column].to_numpy(dtype=float),
                 marker="o",
                 markersize=5.5,
                 linewidth=1.0,
@@ -460,12 +489,12 @@ def save_block_point_plot(components: pd.DataFrame, output_path: Path) -> None:
         axis.axhline(0, color="0.35", linewidth=0.9)
         axis.set_xticks(positions, COMPONENT_ORDER, rotation=28, ha="right")
         axis.set_title(parameter, color=PARAMETER_COLORS[parameter], fontweight="bold")
-        axis.set_ylabel("Variance")
+        axis.set_ylabel(y_label)
         axis.grid(axis="y", alpha=0.22)
         axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     axes[0].legend(frameon=False, fontsize=8)
     fig.suptitle(
-        "Fixed-theta variance components by block\n"
+        f"Fixed-theta {title_label} by block\n"
         "Colors connect estimates calculated from the same dataset block"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.90))
@@ -510,26 +539,77 @@ def main() -> None:
         n_draws,
         rng,
     )
-    summary = component_summary(components)
+    components["standard_error"] = np.nan
+    nonnegative = components["variance"] >= 0
+    components.loc[nonnegative, "standard_error"] = np.sqrt(
+        components.loc[nonnegative, "variance"]
+    )
+    variance_summary = component_summary(components, "variance")
+    se_summary = component_summary(components, "standard_error")
 
     components_path = output_dir / "variance_components_by_block.csv"
-    summary_path = output_dir / "variance_component_summary.csv"
+    variance_summary_path = output_dir / "variance_component_summary.csv"
+    se_summary_path = output_dir / "se_component_summary.csv"
     details_path = output_dir / "conditional_variance_diagnostics.csv"
     assignments_path = output_dir / "block_pairing_assignments.csv"
     components.to_csv(components_path, index=False)
-    summary.to_csv(summary_path, index=False)
+    variance_summary.to_csv(variance_summary_path, index=False)
+    se_summary.to_csv(se_summary_path, index=False)
     details.to_csv(details_path, index=False)
     assignments.to_csv(assignments_path, index=False)
 
-    bar_path = output_dir / "variance_components_mean_bar.png"
-    boxplot_path = output_dir / "variance_components_boxplot.png"
-    points_path = output_dir / "variance_components_block_points.png"
-    save_bar_plot(summary, bar_path)
-    save_boxplot(components, boxplot_path)
-    save_block_point_plot(components, points_path)
+    variance_bar_path = output_dir / "variance_components_mean_bar.png"
+    variance_boxplot_path = output_dir / "variance_components_boxplot.png"
+    variance_points_path = output_dir / "variance_components_block_points.png"
+    save_bar_plot(
+        variance_summary,
+        variance_bar_path,
+        args.n_blocks,
+        "Variance",
+        "variance decomposition",
+    )
+    save_boxplot(
+        components,
+        variance_boxplot_path,
+        "variance",
+        "Variance",
+        "variance decomposition",
+    )
+    save_block_point_plot(
+        components,
+        variance_points_path,
+        "variance",
+        "Variance",
+        "variance components",
+    )
+
+    se_bar_path = output_dir / "se_components_mean_bar.png"
+    se_boxplot_path = output_dir / "se_components_boxplot.png"
+    se_points_path = output_dir / "se_components_block_points.png"
+    save_bar_plot(
+        se_summary,
+        se_bar_path,
+        args.n_blocks,
+        "SE = sqrt(variance)",
+        "SE-scale decomposition",
+    )
+    save_boxplot(
+        components,
+        se_boxplot_path,
+        "standard_error",
+        "SE = sqrt(variance)",
+        "SE-scale decomposition",
+    )
+    save_block_point_plot(
+        components,
+        se_points_path,
+        "standard_error",
+        "SE = sqrt(variance)",
+        "SE-scale components",
+    )
 
     negative = components.loc[
-        (components["component"] != "Total (paired)")
+        (components["component"] != "Total")
         & (components["variance"] < 0),
         ["block", "parameter", "component", "variance"],
     ]
@@ -552,8 +632,10 @@ def main() -> None:
         "negative_component_estimates": negative.to_dict(orient="records"),
         "notes": [
             f"Primary figures use {args.n_blocks} comparable block-level estimates per component.",
+            "Remainder primarily represents model-by-dataset interaction.",
             "Conditional diagnostic rows are not pure variance components.",
             "A negative method-of-moments component is retained rather than truncated.",
+            "Negative variance estimates are missing in SE-scale tables and figures because they cannot be square-rooted.",
         ],
     }
     with (output_dir / "config.json").open("w") as handle:
@@ -562,11 +644,13 @@ def main() -> None:
 
     print(f"STEP 10c complete: {output_dir}")
     print(f"Block components: {components_path}")
-    print(f"Summary:          {summary_path}")
+    print(f"Variance summary: {variance_summary_path}")
+    print(f"SE summary:       {se_summary_path}")
     print(f"Diagnostics:      {details_path}")
-    print(f"Mean bar plot:    {bar_path}")
-    print(f"Boxplot:          {boxplot_path}")
-    print(f"Block points:     {points_path}")
+    print(f"Variance figures: {variance_bar_path}, {variance_boxplot_path}")
+    print(f"                  {variance_points_path}")
+    print(f"SE figures:       {se_bar_path}, {se_boxplot_path}")
+    print(f"                  {se_points_path}")
     if len(negative):
         print(
             f"Note: {len(negative)} method-of-moments component estimate(s) "

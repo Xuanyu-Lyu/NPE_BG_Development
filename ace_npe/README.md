@@ -99,6 +99,10 @@ evaluation, variance-decomposition, and grid-comparison outputs are written to
 `results/fixed_theta_variance_decomposition/`, and
 `results/fixed_theta_npe_grid_comparison/`, respectively.
 
+STEP 10c writes parallel variance-scale and SE-scale (`sqrt(variance)`) bar,
+box, and block-point figures. Its plotted components are Total, Model,
+Dataset, Remainder, and posterior-mean Monte Carlo error.
+
 `demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
 it is not a pipeline step.
 
