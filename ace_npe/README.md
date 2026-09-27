@@ -57,8 +57,7 @@ python 09_compare_n20000_training_sizes.py
 #      at theta=(0.4,0.3,0.3)
 python 10_evaluate_fixed_theta.py
 
-# 10c — decompose fixed-theta posterior-mean variance into model, dataset,
-#       interaction, and posterior-sampling Monte Carlo components
+# 10c — compare fixed-theta total, model, dataset, and posterior uncertainty
 python 10c_decompose_fixed_theta_variance.py
 
 # 11 — paired fixed-theta comparison of the 100 NPEs with a grid posterior
@@ -94,14 +93,15 @@ sbatch --dependency=afterok:"$aggregate_job" \
 ```
 
 The trained models remain in `results/fixed_theta_npe_ensemble/`. New
-evaluation, variance-decomposition, and grid-comparison outputs are written to
+evaluation, uncertainty-comparison, and grid-comparison outputs are written to
 `results/fixed_theta_npe_ensemble_evaluation/`,
 `results/fixed_theta_variance_decomposition/`, and
 `results/fixed_theta_npe_grid_comparison/`, respectively.
 
 STEP 10c writes parallel variance-scale and SE-scale (`sqrt(variance)`) bar,
-box, and block-point figures. Its plotted components are Total, Model,
-Dataset, Remainder, and posterior-mean Monte Carlo error.
+box, and block-point figures. Its plotted sources are Total, Model, Dataset,
+and Posterior uncertainty. Total has one estimate per block; every other source
+has 100 estimates per block. These quantities are compared, not added.
 
 `demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
 it is not a pipeline step.
@@ -187,7 +187,7 @@ ace_npe/
 ├── 09_compare_n20000_training_sizes.py     20k/50k/100k training comparison
 ├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
 ├── 10b_fixed_theta_npe_ensemble.py   reevaluate 100 saved NPEs at N=1000
-├── 10c_decompose_fixed_theta_variance.py  fixed-theta variance decomposition
+├── 10c_decompose_fixed_theta_variance.py  fixed-theta uncertainty comparison
 ├── 10c_decompose_fixed_theta_variance.sh  Alpine submission script for STEP 10c
 ├── 11_compare_fixed_theta_npe_grid.R paired NPE vs grid-posterior diagnostics
 ├── 11_compare_fixed_theta_npe_grid.sh Alpine submission script for STEP 11

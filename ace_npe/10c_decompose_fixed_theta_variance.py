@@ -1,21 +1,21 @@
-"""STEP 10c -- decompose fixed-theta posterior-mean variance.
+"""STEP 10c -- compare fixed-theta uncertainty sources.
 
 This script reuses the fully crossed STEP 10b evaluation: 100 independently
-trained NPEs evaluated on the same 500 fixed-theta datasets.  The datasets are
-randomly divided into five blocks of 100.  Within each block and ACE parameter,
-the observed posterior mean is represented as
+trained NPEs evaluated on the same 500 fixed-theta datasets. The datasets are
+randomly divided into five blocks of 100. For every ACE parameter it reports:
 
-    mean[m, j] = grand mean + model[m] + dataset[j]
-                 + remainder[m, j] + posterior-sampling MC error.
+* Total: one variance across 100 one-to-one model/dataset posterior means per
+  block (five estimates overall).
+* Model: one variance across the 100 models for every dataset (100 estimates
+  per block).
+* Dataset: one variance across a block's 100 datasets for every model (100
+  estimates per block).
+* Posterior uncertainty: the posterior variance for every paired model/dataset
+  cell (100 estimates per block).
 
-A balanced two-way random-effects method-of-moments calculation estimates the
-model and dataset variance components.  The remainder primarily contains the
-model-by-dataset interaction.  The posterior-mean Monte Carlo variance is
-estimated as posterior_variance / n_posterior_draws.  A one-to-one random
-model/dataset matching supplies the requested independent estimate of total
-variance in every block.
-
-No NPE is retrained and no new posterior samples are required.
+Parallel variance-scale and SE-scale figures are written. These quantities are
+an uncertainty comparison, not an additive variance decomposition. No NPE is
+retrained and no new posterior samples are required.
 """
 
 from __future__ import annotations
@@ -42,15 +42,13 @@ COMPONENT_ORDER = [
     "Total",
     "Model",
     "Dataset",
-    "Remainder",
-    "Posterior-mean MC",
+    "Posterior uncertainty",
 ]
 COMPONENT_COLORS = {
     "Total": "#4c4c4c",
     "Model": "#4c78a8",
     "Dataset": "#f58518",
-    "Remainder": "#54a24b",
-    "Posterior-mean MC": "#b279a2",
+    "Posterior uncertainty": "#b279a2",
 }
 PARAMETER_COLORS = {"A": "#1f77b4", "C": "#ff7f0e", "E": "#2ca02c"}
 
@@ -176,69 +174,16 @@ def make_blocks(
     ]
 
 
-def decompose_block(
-    values: np.ndarray,
-    posterior_sds: np.ndarray,
-    n_posterior_draws: int,
-) -> dict[str, float]:
-    """Estimate crossed random-effects variance components for one block."""
-    n_models, n_datasets = values.shape
-    if n_models < 2 or n_datasets < 2:
-        raise ValueError("Variance decomposition requires at least two rows and columns")
-
-    grand_mean = float(values.mean())
-    model_means = values.mean(axis=1)
-    dataset_means = values.mean(axis=0)
-    residuals = (
-        values
-        - model_means[:, None]
-        - dataset_means[None, :]
-        + grand_mean
-    )
-
-    ss_model = n_datasets * np.square(model_means - grand_mean).sum()
-    ss_dataset = n_models * np.square(dataset_means - grand_mean).sum()
-    ss_interaction = np.square(residuals).sum()
-    ms_model = ss_model / (n_models - 1)
-    ms_dataset = ss_dataset / (n_datasets - 1)
-    ms_interaction = ss_interaction / ((n_models - 1) * (n_datasets - 1))
-
-    mc_variance = float(
-        np.mean(np.square(posterior_sds) / float(n_posterior_draws))
-    )
-    model_variance = float((ms_model - ms_interaction) / n_datasets)
-    dataset_variance = float((ms_dataset - ms_interaction) / n_models)
-    remainder_variance = float(ms_interaction - mc_variance)
-
-    return {
-        "Model": model_variance,
-        "Dataset": dataset_variance,
-        "Remainder": remainder_variance,
-        "Posterior-mean MC": mc_variance,
-        "component_sum": (
-            model_variance
-            + dataset_variance
-            + remainder_variance
-            + mc_variance
-        ),
-        "crossed_observed_variance": float(values.var(ddof=1)),
-        "grand_mean": grand_mean,
-    }
-
-
 def calculate_results(
     means: dict[str, np.ndarray],
     posterior_sds: dict[str, np.ndarray],
     dataset_ids: np.ndarray,
     blocks: list[np.ndarray],
-    n_posterior_draws: int,
     rng: np.random.Generator,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Calculate primary block components and detailed conditional diagnostics."""
-    component_rows: list[dict] = []
-    detail_rows: list[dict] = []
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Calculate the requested block and conditional uncertainty estimates."""
+    estimate_rows: list[dict] = []
     assignment_rows: list[dict] = []
-    point_rows: list[dict] = []
     n_models = next(iter(means.values())).shape[0]
 
     for block_number, positions in enumerate(blocks, start=1):
@@ -258,47 +203,7 @@ def calculate_results(
             block_sds = posterior_sds[parameter][:, positions]
             paired_values = means[parameter][np.arange(n_models), paired_positions]
             total_paired = float(paired_values.var(ddof=1))
-            decomposition = decompose_block(
-                block_values, block_sds, n_posterior_draws
-            )
-            mc_cell_variances = (
-                np.square(block_sds) / float(n_posterior_draws)
-            )
-            grand_mean = block_values.mean()
-            model_means = block_values.mean(axis=1)
-            dataset_means = block_values.mean(axis=0)
-            residuals = (
-                block_values
-                - model_means[:, None]
-                - dataset_means[None, :]
-                + grand_mean
-            )
-
-            primary_values = {
-                "Total": total_paired,
-                **{name: decomposition[name] for name in COMPONENT_ORDER[1:]},
-            }
-            for component, value in primary_values.items():
-                component_rows.append(
-                    {
-                        "block": block_number,
-                        "parameter": parameter,
-                        "component": component,
-                        "variance": value,
-                        "n_models": n_models,
-                        "n_datasets": len(positions),
-                        "n_posterior_draws": n_posterior_draws,
-                        "component_sum": decomposition["component_sum"],
-                        "crossed_observed_variance": decomposition[
-                            "crossed_observed_variance"
-                        ],
-                        "paired_total_minus_component_sum": (
-                            total_paired - decomposition["component_sum"]
-                        ),
-                    }
-                )
-
-            point_rows.append(
+            estimate_rows.append(
                 {
                     "block": block_number,
                     "parameter": parameter,
@@ -310,22 +215,8 @@ def calculate_results(
                 }
             )
 
-            # These conditional distributions are useful diagnostics but are
-            # not the pure random-effects components plotted in the main figures.
             for local_index, dataset_position in enumerate(positions):
-                conditional_model_variance = float(
-                    block_values[:, local_index].var(ddof=1)
-                )
-                detail_rows.append(
-                    {
-                        "block": block_number,
-                        "parameter": parameter,
-                        "diagnostic": "model_variance_conditional_on_dataset",
-                        "unit": int(dataset_ids[dataset_position]),
-                        "variance": conditional_model_variance,
-                    }
-                )
-                point_rows.append(
+                estimate_rows.append(
                     {
                         "block": block_number,
                         "parameter": parameter,
@@ -333,39 +224,14 @@ def calculate_results(
                         "unit_type": "dataset",
                         "model": np.nan,
                         "test_simulation": int(dataset_ids[dataset_position]),
-                        "variance": (
-                            conditional_model_variance
-                            - decomposition["Remainder"]
-                            - float(mc_cell_variances[:, local_index].mean())
+                        "variance": float(
+                            block_values[:, local_index].var(ddof=1)
                         ),
                     }
                 )
+
             for model_index in range(n_models):
-                conditional_dataset_variance = float(
-                    block_values[model_index, :].var(ddof=1)
-                )
-                mean_model_mc_variance = float(
-                    mc_cell_variances[model_index, :].mean()
-                )
-                detail_rows.append(
-                    {
-                        "block": block_number,
-                        "parameter": parameter,
-                        "diagnostic": "dataset_variance_conditional_on_model",
-                        "unit": model_index + 1,
-                        "variance": conditional_dataset_variance,
-                    }
-                )
-                detail_rows.append(
-                    {
-                        "block": block_number,
-                        "parameter": parameter,
-                        "diagnostic": "mean_MC_variance_within_model",
-                        "unit": model_index + 1,
-                        "variance": mean_model_mc_variance,
-                    }
-                )
-                point_rows.append(
+                estimate_rows.append(
                     {
                         "block": block_number,
                         "parameter": parameter,
@@ -373,72 +239,47 @@ def calculate_results(
                         "unit_type": "model",
                         "model": model_index + 1,
                         "test_simulation": np.nan,
-                        "variance": (
-                            conditional_dataset_variance
-                            - decomposition["Remainder"]
-                            - mean_model_mc_variance
-                        ),
-                    }
-                )
-                point_rows.append(
-                    {
-                        "block": block_number,
-                        "parameter": parameter,
-                        "component": "Remainder",
-                        "unit_type": "model",
-                        "model": model_index + 1,
-                        "test_simulation": np.nan,
-                        "variance": (
-                            float(residuals[model_index, :].var(ddof=1))
-                            - mean_model_mc_variance
+                        "variance": float(
+                            block_values[model_index, :].var(ddof=1)
                         ),
                     }
                 )
                 paired_local_index = int(pairing[model_index])
                 paired_dataset_position = int(positions[paired_local_index])
-                point_rows.append(
+                estimate_rows.append(
                     {
                         "block": block_number,
                         "parameter": parameter,
-                        "component": "Posterior-mean MC",
+                        "component": "Posterior uncertainty",
                         "unit_type": "paired_model_dataset",
                         "model": model_index + 1,
                         "test_simulation": int(
                             dataset_ids[paired_dataset_position]
                         ),
-                        "variance": float(
-                            mc_cell_variances[model_index, paired_local_index]
-                        ),
+                        "variance": float(block_sds[model_index, paired_local_index] ** 2),
                     }
                 )
 
-    components = pd.DataFrame(component_rows)
-    components["component"] = pd.Categorical(
-        components["component"], categories=COMPONENT_ORDER, ordered=True
-    )
-    components = components.sort_values(
-        ["parameter", "block", "component"]
-    ).reset_index(drop=True)
-    details = pd.DataFrame(detail_rows)
     assignments = pd.DataFrame(assignment_rows)
-    point_estimates = pd.DataFrame(point_rows)
-    point_estimates["component"] = pd.Categorical(
-        point_estimates["component"], categories=COMPONENT_ORDER, ordered=True
+    estimates = pd.DataFrame(estimate_rows)
+    estimates["component"] = pd.Categorical(
+        estimates["component"], categories=COMPONENT_ORDER, ordered=True
     )
-    point_estimates = point_estimates.sort_values(
+    estimates = estimates.sort_values(
         ["parameter", "block", "component"]
     ).reset_index(drop=True)
-    return components, details, assignments, point_estimates
+    estimates["standard_error"] = np.sqrt(estimates["variance"])
+    return estimates, assignments
 
 
 def component_summary(
-    components: pd.DataFrame,
+    estimates: pd.DataFrame,
     value_column: str,
 ) -> pd.DataFrame:
     summary = (
-        components.groupby(["parameter", "component"], observed=True)[value_column]
+        estimates.groupby(["parameter", "component"], observed=True)[value_column]
         .agg(
-            n_blocks="count",
+            n_estimates="count",
             mean="mean",
             sd="std",
             minimum="min",
@@ -447,17 +288,21 @@ def component_summary(
         )
         .reset_index()
     )
-    summary["se_across_blocks"] = summary["sd"] / np.sqrt(summary["n_blocks"])
     return summary
 
 
 def save_bar_plot(
     summary: pd.DataFrame,
     output_path: Path,
-    n_blocks: int,
     y_label: str,
     title_label: str,
 ) -> None:
+    total_count = int(
+        summary.loc[summary["component"] == "Total", "n_estimates"].iloc[0]
+    )
+    conditional_count = int(
+        summary.loc[summary["component"] != "Total", "n_estimates"].max()
+    )
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), sharey=False)
     positions = np.arange(len(COMPONENT_ORDER))
     for axis, parameter in zip(axes, ACE_PARAM_NAMES):
@@ -483,27 +328,34 @@ def save_bar_plot(
         axis.grid(axis="y", alpha=0.22)
         axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     fig.suptitle(
-        f"Fixed-theta {title_label}: mean across {n_blocks} blocks\n"
-        "Error bars are ±1 SD across blocks"
+        f"Fixed-theta {title_label}\n"
+        f"Total: {total_count} estimates; other sources: {conditional_count}; "
+        "error bars: ±1 SD"
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
 def save_boxplot(
-    components: pd.DataFrame,
+    estimates: pd.DataFrame,
     output_path: Path,
     value_column: str,
     y_label: str,
     title_label: str,
 ) -> None:
-    n_blocks = int(components["block"].nunique())
+    n_blocks = int(estimates["block"].nunique())
+    per_block = int(
+        estimates.loc[estimates["component"] != "Total"]
+        .groupby(["parameter", "block", "component"], observed=True)
+        .size()
+        .max()
+    )
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), sharey=False)
     positions = np.arange(1, len(COMPONENT_ORDER) + 1)
     rng = np.random.default_rng(20260925)
     for axis, parameter in zip(axes, ACE_PARAM_NAMES):
-        selected = components.loc[components["parameter"] == parameter]
+        selected = estimates.loc[estimates["parameter"] == parameter]
         values = [
             selected.loc[selected["component"] == name, value_column]
             .dropna()
@@ -532,13 +384,15 @@ def save_boxplot(
             zip(COMPONENT_ORDER, values), start=1
         ):
             jitter = rng.uniform(-0.10, 0.10, len(component_values))
+            is_total = component == "Total"
             axis.scatter(
                 position + jitter,
                 component_values,
-                s=36,
+                s=42 if is_total else 12,
                 color=COMPONENT_COLORS[component],
-                edgecolor="white",
-                linewidth=0.4,
+                alpha=0.90 if is_total else 0.25,
+                edgecolor="white" if is_total else "none",
+                linewidth=0.4 if is_total else 0,
                 zorder=3,
             )
         axis.axhline(0, color="0.35", linewidth=0.9)
@@ -549,9 +403,9 @@ def save_boxplot(
         axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     fig.suptitle(
         f"Fixed-theta {title_label} across {n_blocks} dataset blocks\n"
-        "Each point is one block-level estimate"
+        f"Total: one estimate per block; other sources: {per_block} estimates per block"
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -647,39 +501,32 @@ def main() -> None:
     )
     rng = np.random.default_rng(args.seed)
     blocks = make_blocks(dataset_ids, args.n_replicates, args.n_blocks, rng)
-    components, details, assignments, point_estimates = calculate_results(
+    estimates, assignments = calculate_results(
         means,
         posterior_sds,
         dataset_ids,
         blocks,
-        n_draws,
         rng,
     )
-    components["standard_error"] = np.nan
-    nonnegative = components["variance"] >= 0
-    components.loc[nonnegative, "standard_error"] = np.sqrt(
-        components.loc[nonnegative, "variance"]
-    )
-    point_estimates["standard_error"] = np.nan
-    nonnegative_points = point_estimates["variance"] >= 0
-    point_estimates.loc[nonnegative_points, "standard_error"] = np.sqrt(
-        point_estimates.loc[nonnegative_points, "variance"]
-    )
-    variance_summary = component_summary(components, "variance")
-    se_summary = component_summary(components, "standard_error")
+    variance_summary = component_summary(estimates, "variance")
+    se_summary = component_summary(estimates, "standard_error")
 
-    components_path = output_dir / "variance_components_by_block.csv"
     variance_summary_path = output_dir / "variance_component_summary.csv"
     se_summary_path = output_dir / "se_component_summary.csv"
-    details_path = output_dir / "conditional_variance_diagnostics.csv"
-    point_estimates_path = output_dir / "component_point_estimates.csv"
+    estimates_path = output_dir / "component_point_estimates.csv"
     assignments_path = output_dir / "block_pairing_assignments.csv"
-    components.to_csv(components_path, index=False)
     variance_summary.to_csv(variance_summary_path, index=False)
     se_summary.to_csv(se_summary_path, index=False)
-    details.to_csv(details_path, index=False)
-    point_estimates.to_csv(point_estimates_path, index=False)
+    estimates.to_csv(estimates_path, index=False)
     assignments.to_csv(assignments_path, index=False)
+
+    # Remove tables from the former additive-decomposition version so a rerun
+    # cannot leave obsolete results beside the new uncertainty comparison.
+    for obsolete_name in (
+        "variance_components_by_block.csv",
+        "conditional_variance_diagnostics.csv",
+    ):
+        (output_dir / obsolete_name).unlink(missing_ok=True)
 
     variance_bar_path = output_dir / "variance_components_mean_bar.png"
     variance_boxplot_path = output_dir / "variance_components_boxplot.png"
@@ -687,23 +534,22 @@ def main() -> None:
     save_bar_plot(
         variance_summary,
         variance_bar_path,
-        args.n_blocks,
         "Variance",
-        "variance decomposition",
+        "uncertainty comparison on the variance scale",
     )
     save_boxplot(
-        components,
+        estimates,
         variance_boxplot_path,
         "variance",
         "Variance",
-        "variance decomposition",
+        "uncertainty comparison on the variance scale",
     )
     save_block_point_plot(
-        point_estimates,
+        estimates,
         variance_points_path,
         "variance",
         "Variance",
-        "variance components",
+        "uncertainty sources on the variance scale",
     )
 
     se_bar_path = output_dir / "se_components_mean_bar.png"
@@ -712,32 +558,26 @@ def main() -> None:
     save_bar_plot(
         se_summary,
         se_bar_path,
-        args.n_blocks,
         "SE = sqrt(variance)",
-        "SE-scale decomposition",
+        "uncertainty comparison on the SE scale",
     )
     save_boxplot(
-        components,
+        estimates,
         se_boxplot_path,
         "standard_error",
         "SE = sqrt(variance)",
-        "SE-scale decomposition",
+        "uncertainty comparison on the SE scale",
     )
     save_block_point_plot(
-        point_estimates,
+        estimates,
         se_points_path,
         "standard_error",
         "SE = sqrt(variance)",
-        "SE-scale components",
+        "uncertainty sources on the SE scale",
     )
 
-    negative = components.loc[
-        (components["component"] != "Total")
-        & (components["variance"] < 0),
-        ["block", "parameter", "component", "variance"],
-    ]
     config = {
-        "experiment": "fixed_theta_variance_decomposition",
+        "experiment": "fixed_theta_uncertainty_comparison",
         "source_ensemble_dir": str(ensemble_dir),
         "n_models": args.n_replicates,
         "n_datasets": int(len(dataset_ids)),
@@ -746,42 +586,38 @@ def main() -> None:
         "n_posterior_draws": n_draws,
         "seed": args.seed,
         "parameters": list(ACE_PARAM_NAMES),
-        "method": "balanced crossed random-effects method of moments",
+        "components": list(COMPONENT_ORDER),
         "total_variance_method": (
             "sample variance of a random one-to-one model/dataset pairing "
             "within each block"
         ),
-        "mc_variance_method": "mean(posterior_sd^2 / n_posterior_draws)",
-        "negative_component_estimates": negative.to_dict(orient="records"),
+        "model_variance_method": (
+            "sample variance across models, calculated separately for every dataset"
+        ),
+        "dataset_variance_method": (
+            "sample variance across datasets, calculated separately for every model and block"
+        ),
+        "posterior_uncertainty_method": (
+            "posterior_sd^2 for each paired model/dataset cell"
+        ),
         "notes": [
-            f"Bar and box figures use {args.n_blocks} comparable block-level estimates per component.",
-            "Remainder primarily represents model-by-dataset interaction.",
-            "Conditional diagnostic rows are not pure variance components.",
-            "Point figures show one Total estimate and 100 estimates for every other component in each block.",
-            "Each posterior-mean MC point is posterior_sd^2 / n_posterior_draws for one paired model-dataset cell.",
-            "A negative method-of-moments component is retained rather than truncated.",
-            "Negative variance estimates are missing in SE-scale tables and figures because they cannot be square-rooted.",
+            f"Total has {args.n_blocks} estimates, one per block.",
+            f"Model, Dataset, and Posterior uncertainty each have {args.n_replicates} estimates per block.",
+            "These quantities are an uncertainty comparison and are not additive variance components.",
         ],
     }
     with (output_dir / "config.json").open("w") as handle:
         json.dump(config, handle, indent=2)
-    (output_dir / "COMPLETE").write_text("variance decomposition complete\n")
+    (output_dir / "COMPLETE").write_text("uncertainty comparison complete\n")
 
     print(f"STEP 10c complete: {output_dir}")
-    print(f"Block components: {components_path}")
+    print(f"Point estimates:  {estimates_path}")
     print(f"Variance summary: {variance_summary_path}")
     print(f"SE summary:       {se_summary_path}")
-    print(f"Diagnostics:      {details_path}")
-    print(f"Point estimates:  {point_estimates_path}")
     print(f"Variance figures: {variance_bar_path}, {variance_boxplot_path}")
     print(f"                  {variance_points_path}")
     print(f"SE figures:       {se_bar_path}, {se_boxplot_path}")
     print(f"                  {se_points_path}")
-    if len(negative):
-        print(
-            f"Note: {len(negative)} method-of-moments component estimate(s) "
-            "were negative and were retained; see config.json."
-        )
 
 
 if __name__ == "__main__":

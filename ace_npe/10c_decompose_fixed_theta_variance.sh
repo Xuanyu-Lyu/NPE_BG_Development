@@ -1,5 +1,5 @@
 #!/bin/bash
-# Decompose posterior-mean variance using the completed STEP 10b evaluation.
+# Compare fixed-theta uncertainty sources using the completed STEP 10b evaluation.
 # Submit from the repository root after STEP 10b aggregation is complete:
 #   sbatch ace_npe/10c_decompose_fixed_theta_variance.sh
 
