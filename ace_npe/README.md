@@ -28,6 +28,11 @@ python 02_train_npe.py --data ace_training_data.csv --include_n_pairs \
 # 03 — out-of-sample calibration check -> results/oos/se_proxy/
 python 03_evaluate_oos_predictions.py --model_dir se_proxy
 
+# 03b — choose an NPE training budget K across fixed sample sizes N
+#        H=1 model/cell, M=500 tests, L=2000 posterior draws
+#        -> results/training_budget_grid/
+python 03b_training_budget_grid.py --run-all
+
 # 04 — OpenMx reference + shared test conditions
 Rscript 04_fit_openmx_reference.R
 
@@ -50,9 +55,6 @@ jupyter lab 07_se_calibration.ipynb
 # 08 — paired OpenMx vs fixed-N Dirichlet NPE comparison
 python 08_compare_fixed_n_dirichlet_openmx.py
 
-# 09 — N=20,000 comparison across NPE training-set sizes
-python 09_compare_n20000_training_sizes.py
-
 # 10 — evaluate the 100k-simulation fixed-N models on 500 repeated datasets
 #      at theta=(0.4,0.3,0.3)
 python 10_evaluate_fixed_theta.py
@@ -66,6 +68,30 @@ Rscript 11_compare_fixed_theta_npe_grid.R
 # On CU Boulder Alpine, submit STEP 11 from the repository root:
 sbatch ace_npe/11_compare_fixed_theta_npe_grid.sh
 ```
+
+STEP 03b precedes the formal fixed-N OpenMx comparison so that the NPE
+training budget is selected without using OpenMx results. Its default grid is
+`K = 10k, 20k, 50k, 100k, 200k` by
+`N = 50, 100, 500, 1000, 2000, 5000, 20000`. Each cell trains one transient
+model. Training simulations, posterior draws, and fitted models remain in
+memory and are discarded; only compact per-test summaries, aggregate tables,
+figures, runtimes, and configuration are retained.
+
+On CU Boulder Alpine, submit the 35-cell array and its aggregation dependency
+from the repository root:
+
+```bash
+grid_job=$(sbatch --parsable ace_npe/03b_training_budget_grid.sh)
+
+sbatch --dependency=afterok:"$grid_job" \
+  ace_npe/03b_aggregate_training_budget_grid.sh
+```
+
+The aggregation job creates distributions of estimation error, absolute
+error, posterior kurtosis, posterior skewness, and posterior SD. It removes
+the temporary per-cell files after verifying and combining all 35 cells.
+Here `M` is the number of test datasets and `L` is the number of posterior
+draws, matching the SBC notation.
 
 STEP 10 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model
@@ -178,13 +204,15 @@ ace_npe/
 ├── 01_generate_training_data.py      simulate (θ, x) training pairs
 ├── 02_train_npe.py                   train the normalizing flow
 ├── 03_evaluate_oos_predictions.py    calibration / coverage on fresh draws
+├── 03b_training_budget_grid.py       transient K × N training-budget study
+├── 03b_training_budget_grid.sh       Alpine 35-cell array for STEP 03b
+├── 03b_aggregate_training_budget_grid.sh  aggregate/plot STEP 03b
 ├── 04_fit_openmx_reference.R         OpenMx MLE reference + test conditions
 ├── 05_simulate_posterior_recovery.py NPE fits on those same conditions
 ├── 06_analysis.ipynb                 OpenMx vs NPE comparison
 ├── 07_se_calibration.ipynb           is the reported SE correct?
 ├── 08_compare_fixed_n_dirichlet_openmx.py  paired fixed-N comparison
 ├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
-├── 09_compare_n20000_training_sizes.py     20k/50k/100k training comparison
 ├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
 ├── 10b_fixed_theta_npe_ensemble.py   reevaluate 100 saved NPEs at N=1000
 ├── 10c_decompose_fixed_theta_variance.py  fixed-theta uncertainty comparison
