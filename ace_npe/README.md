@@ -109,9 +109,13 @@ Its tables and bias, MAE, RMSE, uncertainty, and coverage figures are written
 to `results/training_set_size_openmx_comparison/`. Bias is shown as grouped
 boxplots of dataset-level signed errors, with diamonds marking mean error.
 The bias, MAE, and mean-uncertainty figures use separate panels for
-`N < 1,000` and `N >= 1,000`. MAE, mean uncertainty, and coverage use grouped
-bars with 95% confidence-interval error bars. Bias and RMSE retain numerical
-labels at `N = 20,000`; RMSE remains a line plot.
+`N <= 1,000` and `N > 1,000`. MAE and mean uncertainty use grouped bars with
+95% confidence-interval error bars, while RMSE and coverage use line plots.
+MAE and RMSE label values at `N = 20,000`; bias labels its mean errors at both
+`N = 1,000` and `N = 20,000`. The additional
+`paired_signed_error_threshold_counts_by_n.png` figure and
+`signed_error_threshold_counts.csv` count dataset estimates with errors below
+`-0.05`, `-0.01`, and `-0.005`, or above `0.005`, `0.01`, and `0.05`.
 
 STEP 10 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model
