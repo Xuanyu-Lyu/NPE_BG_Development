@@ -93,7 +93,7 @@ def _wishart_compound_symmetric_summaries(
     correlations: np.ndarray,
     n_pairs: int,
     seed: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Draw exact Gaussian sample-covariance summaries without raw twin data.
 
     For centered bivariate Gaussian observations, (N-1)S follows a Wishart
@@ -129,15 +129,15 @@ def _wishart_compound_symmetric_summaries(
     s11 = b11**2 / degrees_freedom
     s12 = b11 * b21 / degrees_freedom
     s22 = (b21**2 + b22**2) / degrees_freedom
-    mean_diagonal = 0.5 * (s11 + s22)
-    return mean_diagonal, s12
+    return s11, s12, s22
 
 
 def simulate_fixed_n(
     n_simulations: int,
     n_pairs: int,
     seed: int,
-) -> tuple[np.ndarray, np.ndarray]:
+    return_covariances: bool = False,
+) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """Return four covariance features and Dirichlet(1,1,1) ACE truths.
 
     The random streams are separated so calls with the same ``seed`` and
@@ -152,16 +152,33 @@ def simulate_fixed_n(
 
     mz_correlation = ace[:, 0] + ace[:, 1]
     dz_correlation = 0.5 * ace[:, 0] + ace[:, 1]
-    mz_var, mz_cov = _wishart_compound_symmetric_summaries(
+    mz_var1, mz_cov, mz_var2 = _wishart_compound_symmetric_summaries(
         mz_correlation, n_pairs, seed_from(seed, 2)
     )
-    dz_var, dz_cov = _wishart_compound_symmetric_summaries(
+    dz_var1, dz_cov, dz_var2 = _wishart_compound_symmetric_summaries(
         dz_correlation, n_pairs, seed_from(seed, 3)
     )
+    mz_var = 0.5 * (mz_var1 + mz_var2)
+    dz_var = 0.5 * (dz_var1 + dz_var2)
     features = np.column_stack((mz_var, mz_cov, dz_var, dz_cov)).astype(
         np.float32
     )
-    return features, ace.astype(np.float32)
+    ace = ace.astype(np.float32)
+    if not return_covariances:
+        return features, ace
+    covariance_data = pd.DataFrame(
+        {
+            "mz_var1": mz_var1,
+            "mz_cov": mz_cov,
+            "mz_var2": mz_var2,
+            "dz_var1": dz_var1,
+            "dz_cov": dz_cov,
+            "dz_var2": dz_var2,
+            "mz_var": mz_var,
+            "dz_var": dz_var,
+        }
+    )
+    return features, ace, covariance_data
 
 
 def resolve_device(requested: str) -> torch.device:

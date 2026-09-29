@@ -55,6 +55,9 @@ jupyter lab 07_se_calibration.ipynb
 # 08 — paired OpenMx vs fixed-N Dirichlet NPE comparison
 python 08_compare_fixed_n_dirichlet_openmx.py
 
+# 08b — paired OpenMx vs NPE-100k/200k/300k/500k using STEP 03b tests
+python 08b_compare_training_sizes_openmx.py
+
 # 10 — evaluate the 100k-simulation fixed-N models on 500 repeated datasets
 #      at theta=(0.4,0.3,0.3)
 python 10_evaluate_fixed_theta.py
@@ -92,6 +95,17 @@ error, posterior kurtosis, posterior skewness, and posterior SD. It removes
 the temporary per-cell files after verifying and combining all 35 cells.
 Here `M` is the number of test datasets and `L` is the number of posterior
 draws, matching the SBC notation.
+
+After STEP 03b completes, STEP 08b regenerates its exact shared test covariance
+matrices, fits OpenMx, and draws paired lines for OpenMx, NPE-100k, NPE-200k,
+NPE-300k, and NPE-500k. No NPE is retrained or loaded. Submit it on Alpine:
+
+```bash
+sbatch ace_npe/08b_compare_training_sizes_openmx.sh
+```
+
+Its tables and bias, MAE, RMSE, uncertainty, and coverage figures are written
+to `results/training_set_size_openmx_comparison/`.
 
 STEP 10 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model
@@ -213,6 +227,8 @@ ace_npe/
 ├── 07_se_calibration.ipynb           is the reported SE correct?
 ├── 08_compare_fixed_n_dirichlet_openmx.py  paired fixed-N comparison
 ├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
+├── 08b_compare_training_sizes_openmx.py  OpenMx vs four STEP 03b NPE sizes
+├── 08b_compare_training_sizes_openmx.sh  Alpine submission for STEP 08b
 ├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
 ├── 10b_fixed_theta_npe_ensemble.py   reevaluate 100 saved NPEs at N=1000
 ├── 10c_decompose_fixed_theta_variance.py  fixed-theta uncertainty comparison
