@@ -29,7 +29,7 @@ python 02_train_npe.py --data ace_training_data.csv --include_n_pairs \
 python 03_evaluate_oos_predictions.py --model_dir se_proxy
 
 # 03b — choose an NPE training set size K across fixed sample sizes N
-#        H=1 model/cell, M=500 tests, L=2000 posterior draws
+#        H=1 model/cell, M=1000 tests, L=2000 posterior draws
 #        -> results/training_budget_grid/
 python 03b_training_budget_grid.py --run-all
 
@@ -76,7 +76,8 @@ STEP 03b precedes the formal fixed-N OpenMx comparison so that the NPE
 training set size is selected without using OpenMx results. Its default grid is
 `K = 10k, 20k, 50k, 100k, 200k, 300k, 500k` by
 `N = 50, 100, 500, 1000, 2000, 5000, 20000`. Each cell trains one transient
-model. Training simulations, posterior draws, and fitted models remain in
+model and evaluates `M = 1000` shared test datasets. Training simulations,
+posterior draws, and fitted models remain in
 memory and are discarded; only compact per-test summaries, aggregate tables,
 figures, runtimes, and configuration are retained.
 
@@ -105,7 +106,9 @@ sbatch ace_npe/08b_compare_training_sizes_openmx.sh
 ```
 
 Its tables and bias, MAE, RMSE, uncertainty, and coverage figures are written
-to `results/training_set_size_openmx_comparison/`.
+to `results/training_set_size_openmx_comparison/`. Bias and RMSE remain line
+plots with values labeled at `N = 20,000`; the other metrics use grouped
+point-and-error-bar plots.
 
 STEP 10 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model

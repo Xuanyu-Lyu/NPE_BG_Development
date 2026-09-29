@@ -41,6 +41,13 @@ METHOD_COLORS = {
     "NPE-300k": "#8e63b6",
     "NPE-500k": "#c44e52",
 }
+METHOD_MARKERS = {
+    "OpenMx": "o",
+    "NPE-100k": "s",
+    "NPE-200k": "^",
+    "NPE-300k": "D",
+    "NPE-500k": "P",
+}
 
 
 def method_for_k(k_value: int) -> str:
@@ -422,7 +429,7 @@ def configure_n_axis(axis, n_values: tuple[int, ...]) -> None:
     axis.grid(alpha=0.22)
 
 
-def plot_metric(
+def plot_line_metric(
     metrics: pd.DataFrame,
     methods: tuple[str, ...],
     n_values: tuple[int, ...],
@@ -433,8 +440,10 @@ def plot_metric(
     interval_columns: tuple[str, str] | None = None,
     reference: float | None = None,
     lower_zero: bool = False,
+    annotate_n: int | None = None,
 ) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(16, 5.2), squeeze=False)
+    annotation_offsets = np.linspace(28, -28, len(methods))
     for column, parameter in enumerate(ACE_PARAM_NAMES):
         axis = axes[0, column]
         if reference is not None:
@@ -445,7 +454,7 @@ def plot_metric(
                 linewidth=1.1,
                 label=("Nominal 95%" if reference == 0.95 else "Zero"),
             )
-        for method in methods:
+        for method_index, method in enumerate(methods):
             subset = (
                 metrics.loc[
                     (metrics["method"] == method)
@@ -463,10 +472,103 @@ def plot_metric(
             axis.plot(
                 n_values,
                 values,
-                marker="o",
+                marker=METHOD_MARKERS[method],
                 markersize=4.5,
                 linewidth=1.7,
                 color=color,
+                label=method,
+            )
+            if annotate_n is not None and annotate_n in n_values:
+                target_index = n_values.index(annotate_n)
+                target_value = float(values[target_index])
+                axis.annotate(
+                    f"{target_value:.5f}",
+                    xy=(annotate_n, target_value),
+                    xytext=(8, annotation_offsets[method_index]),
+                    textcoords="offset points",
+                    ha="left",
+                    va="center",
+                    color=color,
+                    fontsize=8,
+                    bbox={
+                        "boxstyle": "round,pad=0.15",
+                        "facecolor": "white",
+                        "edgecolor": "none",
+                        "alpha": 0.78,
+                    },
+                    arrowprops={"arrowstyle": "-", "color": color, "lw": 0.6},
+                )
+        if lower_zero:
+            axis.set_ylim(bottom=0.0)
+        if metric == "coverage_95":
+            minimum = float(metrics["coverage_95_ci_lo"].min())
+            axis.set_ylim(max(0.0, minimum - 0.03), 1.005)
+        axis.set_title(parameter)
+        axis.set_ylabel(ylabel)
+        configure_n_axis(axis, n_values)
+        if annotate_n is not None and annotate_n in n_values:
+            axis.set_xlim(min(n_values) / 1.15, max(n_values) * 1.55)
+    axes[0, 0].legend(fontsize=8)
+    fig.suptitle(title)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_grouped_point_metric(
+    metrics: pd.DataFrame,
+    methods: tuple[str, ...],
+    n_values: tuple[int, ...],
+    metric: str,
+    ylabel: str,
+    title: str,
+    path: Path,
+    interval_columns: tuple[str, str],
+    reference: float | None = None,
+    lower_zero: bool = False,
+) -> None:
+    """Plot horizontally separated method estimates with confidence bars."""
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5.2), squeeze=False)
+    base_positions = np.arange(len(n_values), dtype=float)
+    offsets = np.linspace(-0.28, 0.28, len(methods))
+
+    for column, parameter in enumerate(ACE_PARAM_NAMES):
+        axis = axes[0, column]
+        if reference is not None:
+            axis.axhline(
+                reference,
+                color="black",
+                linestyle="--",
+                linewidth=1.1,
+                label=("Nominal 95%" if reference == 0.95 else "Reference"),
+            )
+        for method_index, method in enumerate(methods):
+            subset = (
+                metrics.loc[
+                    (metrics["method"] == method)
+                    & (metrics["parameter"] == parameter)
+                ]
+                .set_index("N")
+                .reindex(n_values)
+            )
+            values = subset[metric].to_numpy(dtype=float)
+            lower = subset[interval_columns[0]].to_numpy(dtype=float)
+            upper = subset[interval_columns[1]].to_numpy(dtype=float)
+            yerr = np.vstack(
+                (
+                    np.maximum(values - lower, 0.0),
+                    np.maximum(upper - values, 0.0),
+                )
+            )
+            axis.errorbar(
+                base_positions + offsets[method_index],
+                values,
+                yerr=yerr,
+                fmt=METHOD_MARKERS[method],
+                markersize=5,
+                capsize=2.5,
+                elinewidth=1.0,
+                color=METHOD_COLORS[method],
                 label=method,
             )
         if lower_zero:
@@ -476,7 +578,11 @@ def plot_metric(
             axis.set_ylim(max(0.0, minimum - 0.03), 1.005)
         axis.set_title(parameter)
         axis.set_ylabel(ylabel)
-        configure_n_axis(axis, n_values)
+        axis.set_xticks(base_positions, [f"{value:,}" for value in n_values])
+        axis.tick_params(axis="x", labelrotation=35)
+        axis.set_xlabel("Twin-pair sample size N")
+        axis.grid(axis="y", alpha=0.22)
+
     axes[0, 0].legend(fontsize=8)
     fig.suptitle(title)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
@@ -493,7 +599,7 @@ def save_figures(
 ) -> None:
     methods = ("OpenMx",) + tuple(method_for_k(value) for value in k_values)
     suffix = f"(M={n_test_datasets:,} test datasets per N; paired on usable OpenMx fits)"
-    plot_metric(
+    plot_line_metric(
         metrics,
         methods,
         n_values,
@@ -503,8 +609,9 @@ def save_figures(
         output_dir / "paired_bias_by_n.png",
         interval_columns=("bias_ci_lo", "bias_ci_hi"),
         reference=0.0,
+        annotate_n=20_000,
     )
-    plot_metric(
+    plot_grouped_point_metric(
         metrics,
         methods,
         n_values,
@@ -515,7 +622,7 @@ def save_figures(
         interval_columns=("mae_ci_lo", "mae_ci_hi"),
         lower_zero=True,
     )
-    plot_metric(
+    plot_line_metric(
         metrics,
         methods,
         n_values,
@@ -524,8 +631,9 @@ def save_figures(
         f"Paired RMSE: OpenMx versus NPE training set sizes\n{suffix}",
         output_dir / "paired_rmse_by_n.png",
         lower_zero=True,
+        annotate_n=20_000,
     )
-    plot_metric(
+    plot_grouped_point_metric(
         metrics,
         methods,
         n_values,
@@ -536,7 +644,7 @@ def save_figures(
         interval_columns=("uncertainty_mean_ci_lo", "uncertainty_mean_ci_hi"),
         lower_zero=True,
     )
-    plot_metric(
+    plot_grouped_point_metric(
         metrics,
         methods,
         n_values,

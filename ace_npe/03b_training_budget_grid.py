@@ -638,7 +638,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--k-values", type=int, nargs="+", default=list(DEFAULT_K_VALUES))
     parser.add_argument("--n-values", type=int, nargs="+", default=list(DEFAULT_N_VALUES))
-    parser.add_argument("--n-test-datasets", type=int, default=500, metavar="M")
+    parser.add_argument("--n-test-datasets", type=int, default=1000, metavar="M")
     parser.add_argument("--n-posterior-draws", type=int, default=2000, metavar="L")
     parser.add_argument("--output-dir", default="training_budget_grid")
     parser.add_argument("--seed", type=int, default=2026)
