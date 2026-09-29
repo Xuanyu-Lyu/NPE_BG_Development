@@ -111,11 +111,15 @@ boxplots of dataset-level signed errors, with diamonds marking mean error.
 The bias, MAE, and mean-uncertainty figures use separate panels for
 `N <= 1,000` and `N > 1,000`. MAE and mean uncertainty use grouped bars with
 95% confidence-interval error bars, while RMSE and coverage use line plots.
-MAE and RMSE label values at `N = 20,000`; bias labels its mean errors at both
-`N = 1,000` and `N = 20,000`. The additional
-`paired_signed_error_threshold_counts_by_n.png` figure and
-`signed_error_threshold_counts.csv` count dataset estimates with errors below
-`-0.05`, `-0.01`, and `-0.005`, or above `0.005`, `0.01`, and `0.05`.
+MAE labels values at `N = 5,000` and `N = 20,000`; mean uncertainty labels
+values at `N = 1,000` and `N = 20,000`; RMSE labels values at `N = 20,000`.
+The bias boxplot has no text annotations. Two additional figures,
+`paired_abs_error_gt_1sd_counts_by_n.png` and
+`paired_abs_error_gt_2sd_counts_by_n.png`, count dataset estimates whose
+absolute errors exceed one or two times their own uncertainty. The comparison
+uses each OpenMx estimate's SE and each NPE posterior's SD, rather than a
+common SD. The underlying counts and proportions are saved in
+`uncertainty_exceedance_counts.csv`.
 
 STEP 10 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model

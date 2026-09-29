@@ -50,14 +50,7 @@ METHOD_MARKERS = {
     "NPE-300k": "D",
     "NPE-500k": "P",
 }
-SIGNED_ERROR_THRESHOLDS = (
-    ("error < -0.05", "<", -0.05),
-    ("error < -0.01", "<", -0.01),
-    ("error < -0.005", "<", -0.005),
-    ("error > 0.005", ">", 0.005),
-    ("error > 0.01", ">", 0.01),
-    ("error > 0.05", ">", 0.05),
-)
+UNCERTAINTY_MULTIPLIERS = (1, 2)
 
 
 def method_for_k(k_value: int) -> str:
@@ -430,29 +423,30 @@ def summarize_metrics(
     return output
 
 
-def summarize_signed_error_threshold_counts(
+def summarize_uncertainty_exceedance_counts(
     estimates: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Count dataset estimates in each requested signed-error tail."""
+    """Count errors exceeding each estimate's own uncertainty by 1x or 2x."""
     rows = []
     for (method, n_value, parameter), group in estimates.groupby(
         ["method", "N", "parameter"], sort=False
     ):
         errors = group["error"].to_numpy(dtype=float)
-        for criterion, operator, threshold in SIGNED_ERROR_THRESHOLDS:
-            selected = errors < threshold if operator == "<" else errors > threshold
+        uncertainty = group["uncertainty"].to_numpy(dtype=float)
+        valid = np.isfinite(errors) & np.isfinite(uncertainty) & (uncertainty > 0)
+        for multiplier in UNCERTAINTY_MULTIPLIERS:
+            selected = valid & (np.abs(errors) > multiplier * uncertainty)
             count = int(selected.sum())
             rows.append(
                 {
                     "method": method,
                     "N": int(n_value),
                     "parameter": parameter,
-                    "criterion": criterion,
-                    "operator": operator,
-                    "threshold": threshold,
+                    "uncertainty_multiplier": multiplier,
                     "count": count,
                     "n_paired": len(errors),
-                    "proportion": count / len(errors),
+                    "n_valid_uncertainty": int(valid.sum()),
+                    "proportion": count / valid.sum() if valid.any() else np.nan,
                 }
             )
     return pd.DataFrame(rows)
@@ -574,7 +568,7 @@ def plot_split_grouped_bar_metric(
     path: Path,
     interval_columns: tuple[str, str],
     lower_zero: bool = False,
-    annotate_n: int | None = None,
+    annotate_ns: tuple[int, ...] = (),
 ) -> None:
     """Draw grouped bars and give the low- and high-N ranges separate scales."""
     n_ranges = split_n_ranges(n_values)
@@ -624,8 +618,10 @@ def plot_split_grouped_bar_metric(
                     error_kw={"ecolor": "black", "elinewidth": 0.9},
                     label=method,
                 )
-                if annotate_n is not None and annotate_n in range_values:
-                    target_index = range_values.index(annotate_n)
+                for annotation_n in annotate_ns:
+                    if annotation_n not in range_values:
+                        continue
+                    target_index = range_values.index(annotation_n)
                     target_value = float(values[target_index])
                     target_position = (
                         base_positions[target_index] + offsets[method_index]
@@ -654,7 +650,7 @@ def plot_split_grouped_bar_metric(
                     )
             if lower_zero:
                 axis.set_ylim(bottom=0.0)
-            if annotate_n is not None and annotate_n in range_values:
+            if any(value in range_values for value in annotate_ns):
                 axis.set_xlim(-0.5, len(range_values) - 0.5 + 0.8)
             axis.set_title(f"{parameter} — {range_label}")
             axis.set_ylabel(ylabel)
@@ -700,7 +696,6 @@ def plot_split_bias_boxplots(
     offsets = (
         np.arange(len(methods), dtype=float) - (len(methods) - 1) / 2
     ) * box_width
-    annotation_offsets = np.linspace(28, -28, len(methods))
 
     for row, (range_label, range_values) in enumerate(n_ranges):
         base_positions = np.arange(len(range_values), dtype=float)
@@ -749,44 +744,6 @@ def plot_split_bias_boxplots(
                     box.set_facecolor(color)
                     box.set_edgecolor(color)
                     box.set_alpha(0.78)
-            for annotation_n in (1_000, 20_000):
-                if annotation_n not in range_values:
-                    continue
-                n_index = range_values.index(annotation_n)
-                for method_index, method in enumerate(methods):
-                    values = estimates.loc[
-                        (estimates["method"] == method)
-                        & (estimates["parameter"] == parameter)
-                        & (estimates["N"] == annotation_n),
-                        "error",
-                    ].to_numpy(dtype=float)
-                    mean_error = float(values.mean())
-                    mean_position = (
-                        base_positions[n_index] + offsets[method_index]
-                    )
-                    color = METHOD_COLORS[method]
-                    axis.annotate(
-                        f"{mean_error:.5f}",
-                        xy=(mean_position, mean_error),
-                        xytext=(8, annotation_offsets[method_index]),
-                        textcoords="offset points",
-                        ha="left",
-                        va="center",
-                        color=color,
-                        fontsize=7.5,
-                        bbox={
-                            "boxstyle": "round,pad=0.12",
-                            "facecolor": "white",
-                            "edgecolor": "none",
-                            "alpha": 0.80,
-                        },
-                        arrowprops={
-                            "arrowstyle": "-",
-                            "color": color,
-                            "lw": 0.6,
-                        },
-                    )
-                axis.set_xlim(-0.5, len(range_values) - 0.5 + 0.8)
             axis.set_title(f"{parameter} — {range_label}")
             axis.set_ylabel("Signed error (estimate - truth)")
             axis.set_xticks(
@@ -824,74 +781,72 @@ def plot_split_bias_boxplots(
     plt.close(fig)
 
 
-def plot_signed_error_threshold_counts(
+def plot_split_uncertainty_exceedance_counts(
     counts: pd.DataFrame,
     methods: tuple[str, ...],
     n_values: tuple[int, ...],
+    multiplier: int,
     title: str,
     path: Path,
 ) -> None:
-    """Plot counts of dataset estimates beyond six signed-error thresholds."""
-    criteria = tuple(item[0] for item in SIGNED_ERROR_THRESHOLDS)
+    """Plot counts whose absolute errors exceed model-specific uncertainty."""
+    n_ranges = split_n_ranges(n_values)
     fig, axes = plt.subplots(
+        len(n_ranges),
         len(ACE_PARAM_NAMES),
-        len(criteria),
-        figsize=(24, 11.5),
+        figsize=(16, 4.3 * len(n_ranges)),
         squeeze=False,
     )
-    for row, parameter in enumerate(ACE_PARAM_NAMES):
-        for column, criterion in enumerate(criteria):
+    bar_width = 0.15
+    offsets = (
+        np.arange(len(methods), dtype=float) - (len(methods) - 1) / 2
+    ) * bar_width
+
+    for row, (range_label, range_values) in enumerate(n_ranges):
+        base_positions = np.arange(len(range_values), dtype=float)
+        for column, parameter in enumerate(ACE_PARAM_NAMES):
             axis = axes[row, column]
-            for method in methods:
+            for method_index, method in enumerate(methods):
                 subset = (
                     counts.loc[
                         (counts["method"] == method)
                         & (counts["parameter"] == parameter)
-                        & (counts["criterion"] == criterion)
+                        & (counts["uncertainty_multiplier"] == multiplier)
                     ]
                     .set_index("N")
-                    .reindex(n_values)
+                    .reindex(range_values)
                 )
-                axis.plot(
-                    n_values,
+                axis.bar(
+                    base_positions + offsets[method_index],
                     subset["count"].to_numpy(dtype=float),
-                    marker=METHOD_MARKERS[method],
-                    markersize=3.5,
-                    linewidth=1.35,
+                    width=bar_width * 0.92,
                     color=METHOD_COLORS[method],
+                    edgecolor="white",
+                    linewidth=0.4,
                     label=method,
                 )
-            axis.set_xscale("log")
-            axis.set_xticks(n_values, [f"{value:,}" for value in n_values])
-            axis.xaxis.set_minor_formatter(NullFormatter())
-            axis.tick_params(axis="x", labelrotation=40, labelsize=7)
             axis.set_ylim(bottom=0.0)
-            axis.set_title(criterion, fontsize=10)
-            axis.set_xlabel("N", fontsize=9)
-            axis.set_ylabel(f"{parameter}: count", fontsize=9)
-            axis.grid(alpha=0.22)
+            axis.set_title(f"{parameter} — {range_label}")
+            axis.set_ylabel("Count")
+            axis.set_xticks(
+                base_positions, [f"{value:,}" for value in range_values]
+            )
+            axis.set_xlabel("Twin-pair sample size N")
+            axis.grid(axis="y", alpha=0.22)
+            axis.set_axisbelow(True)
 
     handles = [
-        Line2D(
-            [],
-            [],
-            marker=METHOD_MARKERS[method],
-            color=METHOD_COLORS[method],
-            linewidth=1.35,
-            markersize=4,
-            label=method,
-        )
-        for method in methods
+        Patch(facecolor=METHOD_COLORS[method], label=method) for method in methods
     ]
     fig.legend(
         handles=handles,
         loc="upper center",
         ncol=len(methods),
         fontsize=9,
-        bbox_to_anchor=(0.5, 0.93),
+        bbox_to_anchor=(0.5, 0.91),
     )
     fig.suptitle(title, y=0.995)
-    fig.tight_layout(rect=(0, 0, 1, 0.88))
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -899,7 +854,7 @@ def plot_signed_error_threshold_counts(
 def save_figures(
     metrics: pd.DataFrame,
     estimates: pd.DataFrame,
-    threshold_counts: pd.DataFrame,
+    uncertainty_counts: pd.DataFrame,
     k_values: tuple[int, ...],
     n_values: tuple[int, ...],
     n_test_datasets: int,
@@ -925,7 +880,7 @@ def save_figures(
         output_dir / "paired_mae_by_n.png",
         interval_columns=("mae_ci_lo", "mae_ci_hi"),
         lower_zero=True,
-        annotate_n=20_000,
+        annotate_ns=(5_000, 20_000),
     )
     plot_line_metric(
         metrics,
@@ -948,6 +903,7 @@ def save_figures(
         output_dir / "paired_mean_uncertainty_by_n.png",
         interval_columns=("uncertainty_mean_ci_lo", "uncertainty_mean_ci_hi"),
         lower_zero=True,
+        annotate_ns=(1_000, 20_000),
     )
     plot_line_metric(
         metrics,
@@ -960,14 +916,17 @@ def save_figures(
         interval_columns=("coverage_95_ci_lo", "coverage_95_ci_hi"),
         reference=0.95,
     )
-    plot_signed_error_threshold_counts(
-        threshold_counts,
-        methods,
-        n_values,
-        "Counts of dataset estimates beyond signed-error thresholds\n"
-        f"{suffix}",
-        output_dir / "paired_signed_error_threshold_counts_by_n.png",
-    )
+    for multiplier in UNCERTAINTY_MULTIPLIERS:
+        plot_split_uncertainty_exceedance_counts(
+            uncertainty_counts,
+            methods,
+            n_values,
+            multiplier,
+            f"Counts with |estimate - truth| > {multiplier} × own uncertainty\n"
+            f"{suffix}; OpenMx SE and NPE posterior SD",
+            output_dir
+            / f"paired_abs_error_gt_{multiplier}sd_counts_by_n.png",
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1031,7 +990,9 @@ def main() -> None:
     openmx_path = output_dir / "openmx_estimates.csv"
     estimates_path = output_dir / "paired_estimates_long.csv"
     metrics_path = output_dir / "comparison_metrics.csv"
-    threshold_counts_path = output_dir / "signed_error_threshold_counts.csv"
+    uncertainty_counts_path = (
+        output_dir / "uncertainty_exceedance_counts.csv"
+    )
     config_path = output_dir / "config.json"
     write_csv_atomic(paired, paired_path)
     paired_fingerprint = file_sha256(paired_path)
@@ -1063,19 +1024,24 @@ def main() -> None:
         paired, openmx, summaries, args.k_values
     )
     metrics = summarize_metrics(estimates, n_test_datasets)
-    threshold_counts = summarize_signed_error_threshold_counts(estimates)
+    uncertainty_counts = summarize_uncertainty_exceedance_counts(estimates)
     write_csv_atomic(estimates, estimates_path)
     write_csv_atomic(metrics, metrics_path)
-    write_csv_atomic(threshold_counts, threshold_counts_path)
+    write_csv_atomic(uncertainty_counts, uncertainty_counts_path)
     save_figures(
         metrics,
         estimates,
-        threshold_counts,
+        uncertainty_counts,
         args.k_values,
         n_values,
         n_test_datasets,
         output_dir,
     )
+    for obsolete_name in (
+        "paired_signed_error_threshold_counts_by_n.png",
+        "signed_error_threshold_counts.csv",
+    ):
+        (output_dir / obsolete_name).unlink(missing_ok=True)
 
     config = {
         "design": "paired_openmx_vs_multiple_npe_training_set_sizes",
@@ -1093,9 +1059,7 @@ def main() -> None:
         "openmx_uncertainty": "delta-method standard error",
         "npe_uncertainty": "posterior standard deviation",
         "npe_models_retrained": False,
-        "signed_error_count_thresholds": [
-            criterion for criterion, _, _ in SIGNED_ERROR_THRESHOLDS
-        ],
+        "uncertainty_exceedance_multipliers": list(UNCERTAINTY_MULTIPLIERS),
         "paired_data_sha256": paired_fingerprint,
         "training_grid_summaries_sha256": grid_summaries_fingerprint,
         "openmx_backend": str(Path(args.openmx_backend).resolve()),
