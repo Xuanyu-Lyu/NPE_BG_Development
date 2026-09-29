@@ -28,7 +28,7 @@ python 02_train_npe.py --data ace_training_data.csv --include_n_pairs \
 # 03 — out-of-sample calibration check -> results/oos/se_proxy/
 python 03_evaluate_oos_predictions.py --model_dir se_proxy
 
-# 03b — choose an NPE training budget K across fixed sample sizes N
+# 03b — choose an NPE training set size K across fixed sample sizes N
 #        H=1 model/cell, M=500 tests, L=2000 posterior draws
 #        -> results/training_budget_grid/
 python 03b_training_budget_grid.py --run-all
@@ -70,14 +70,14 @@ sbatch ace_npe/11_compare_fixed_theta_npe_grid.sh
 ```
 
 STEP 03b precedes the formal fixed-N OpenMx comparison so that the NPE
-training budget is selected without using OpenMx results. Its default grid is
-`K = 10k, 20k, 50k, 100k, 200k` by
+training set size is selected without using OpenMx results. Its default grid is
+`K = 10k, 20k, 50k, 100k, 200k, 300k, 500k` by
 `N = 50, 100, 500, 1000, 2000, 5000, 20000`. Each cell trains one transient
 model. Training simulations, posterior draws, and fitted models remain in
 memory and are discarded; only compact per-test summaries, aggregate tables,
 figures, runtimes, and configuration are retained.
 
-On CU Boulder Alpine, submit the 35-cell array and its aggregation dependency
+On CU Boulder Alpine, submit the 49-cell array and its aggregation dependency
 from the repository root:
 
 ```bash
@@ -204,8 +204,8 @@ ace_npe/
 ├── 01_generate_training_data.py      simulate (θ, x) training pairs
 ├── 02_train_npe.py                   train the normalizing flow
 ├── 03_evaluate_oos_predictions.py    calibration / coverage on fresh draws
-├── 03b_training_budget_grid.py       transient K × N training-budget study
-├── 03b_training_budget_grid.sh       Alpine 35-cell array for STEP 03b
+├── 03b_training_budget_grid.py       transient K × N training-set-size study
+├── 03b_training_budget_grid.sh       Alpine 49-cell array for STEP 03b
 ├── 03b_aggregate_training_budget_grid.sh  aggregate/plot STEP 03b
 ├── 04_fit_openmx_reference.R         OpenMx MLE reference + test conditions
 ├── 05_simulate_posterior_recovery.py NPE fits on those same conditions

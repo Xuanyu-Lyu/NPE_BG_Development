@@ -1,4 +1,4 @@
-"""STEP 03b -- NPE training-budget study across fixed twin-pair sample sizes.
+"""STEP 03b -- NPE training-set-size study across fixed twin-pair sample sizes.
 
 For each cell in a K x N grid, this script:
 
@@ -14,7 +14,7 @@ figures, and removes the temporary per-cell files by default.
 Notation used throughout the project:
 
     N  twin-pair sample size
-    K  training simulation budget
+    K  training set size
     h  trained-model index, h=1,...,H (H=1 here)
     m  test-dataset index, m=1,...,M
     l  posterior-draw index, l=1,...,L
@@ -50,7 +50,15 @@ from prior_compare.prior_compare_utils import (
 )
 
 
-DEFAULT_K_VALUES = (10_000, 20_000, 50_000, 100_000, 200_000)
+DEFAULT_K_VALUES = (
+    10_000,
+    20_000,
+    50_000,
+    100_000,
+    200_000,
+    300_000,
+    500_000,
+)
 DEFAULT_N_VALUES = (50, 100, 500, 1_000, 2_000, 5_000, 20_000)
 METRICS = (
     "error",
@@ -62,7 +70,7 @@ METRICS = (
 METRIC_LABELS = {
     "error": "Estimation error (posterior mean - truth)",
     "absolute_error": "Absolute estimation error",
-    "posterior_kurtosis": "Posterior kurtosis (Pearson)",
+    "posterior_kurtosis": "Posterior kurtosis",
     "posterior_skewness": "Posterior skewness",
     "posterior_sd": "Posterior SD",
 }
@@ -481,7 +489,7 @@ def plot_metric_distributions(
             if column_index == 0:
                 axis.set_ylabel(f"{parameter}\n{METRIC_LABELS[metric]}")
             if row_index == len(ACE_PARAM_NAMES) - 1:
-                axis.set_xlabel("Training budget K")
+                axis.set_xlabel("Training set size K")
             axis.set_xticks(positions, [compact_number(value) for value in k_values])
             axis.tick_params(axis="x", labelrotation=45, labelsize=8)
             axis.ticklabel_format(
@@ -490,7 +498,7 @@ def plot_metric_distributions(
             axis.grid(axis="y", alpha=0.2)
 
     fig.suptitle(
-        f"{METRIC_LABELS[metric]} across training budgets and sample sizes\n"
+        f"{METRIC_LABELS[metric]} across training set sizes and sample sizes\n"
         f"H=1 model per (K,N); M={n_test_datasets:,} test datasets; "
         f"L={n_draws:,} posterior draws",
         fontsize=14,
@@ -552,10 +560,10 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
         )
 
     config = {
-        "experiment": "fixed_N_training_budget_grid",
+        "experiment": "fixed_N_training_set_size_grid",
         "notation": {
             "N": "twin-pair sample size",
-            "K": "training simulation budget before internal validation split",
+            "K": "training set size before internal validation split",
             "H": "number of independently trained models per (K,N)",
             "M": "number of test datasets per (K,N)",
             "L": "posterior draws per test dataset",
@@ -592,12 +600,12 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     if not args.keep_cell_files:
         shutil.rmtree(cells_dir)
         print(f"Removed temporary cell files: {cells_dir}")
-    print(f"Saved complete training-budget study -> {output_dir}")
+    print(f"Saved complete training-set-size study -> {output_dir}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train and evaluate the fixed-N ACE NPE K x N grid"
+        description="Study NPE training set size K across fixed sample sizes N"
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
