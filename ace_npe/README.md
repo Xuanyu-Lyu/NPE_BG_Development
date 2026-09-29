@@ -106,9 +106,12 @@ sbatch ace_npe/08b_compare_training_sizes_openmx.sh
 ```
 
 Its tables and bias, MAE, RMSE, uncertainty, and coverage figures are written
-to `results/training_set_size_openmx_comparison/`. Bias and RMSE remain line
-plots with values labeled at `N = 20,000`; the other metrics use grouped
-point-and-error-bar plots.
+to `results/training_set_size_openmx_comparison/`. Bias is shown as grouped
+boxplots of dataset-level signed errors, with diamonds marking mean error.
+The bias, MAE, and mean-uncertainty figures use separate panels for
+`N < 1,000` and `N >= 1,000`. MAE, mean uncertainty, and coverage use grouped
+bars with 95% confidence-interval error bars. Bias and RMSE retain numerical
+labels at `N = 20,000`; RMSE remains a line plot.
 
 STEP 10 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model

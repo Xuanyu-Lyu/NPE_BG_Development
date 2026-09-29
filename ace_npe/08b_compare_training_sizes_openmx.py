@@ -25,6 +25,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.ticker import NullFormatter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -515,7 +517,103 @@ def plot_line_metric(
     plt.close(fig)
 
 
-def plot_grouped_point_metric(
+def split_n_ranges(
+    n_values: tuple[int, ...],
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    """Split N values so the smaller high-N metrics remain visible."""
+    ranges = (
+        ("N < 1,000", tuple(value for value in n_values if value < 1_000)),
+        ("N ≥ 1,000", tuple(value for value in n_values if value >= 1_000)),
+    )
+    return tuple((label, values) for label, values in ranges if values)
+
+
+def plot_split_grouped_bar_metric(
+    metrics: pd.DataFrame,
+    methods: tuple[str, ...],
+    n_values: tuple[int, ...],
+    metric: str,
+    ylabel: str,
+    title: str,
+    path: Path,
+    interval_columns: tuple[str, str],
+    lower_zero: bool = False,
+) -> None:
+    """Draw grouped bars and give the low- and high-N ranges separate scales."""
+    n_ranges = split_n_ranges(n_values)
+    fig, axes = plt.subplots(
+        len(n_ranges),
+        len(ACE_PARAM_NAMES),
+        figsize=(16, 4.3 * len(n_ranges)),
+        squeeze=False,
+    )
+    bar_width = 0.15
+    offsets = (
+        np.arange(len(methods), dtype=float) - (len(methods) - 1) / 2
+    ) * bar_width
+
+    for row, (range_label, range_values) in enumerate(n_ranges):
+        base_positions = np.arange(len(range_values), dtype=float)
+        for column, parameter in enumerate(ACE_PARAM_NAMES):
+            axis = axes[row, column]
+            for method_index, method in enumerate(methods):
+                subset = (
+                    metrics.loc[
+                        (metrics["method"] == method)
+                        & (metrics["parameter"] == parameter)
+                    ]
+                    .set_index("N")
+                    .reindex(range_values)
+                )
+                values = subset[metric].to_numpy(dtype=float)
+                lower = subset[interval_columns[0]].to_numpy(dtype=float)
+                upper = subset[interval_columns[1]].to_numpy(dtype=float)
+                yerr = np.vstack(
+                    (
+                        np.maximum(values - lower, 0.0),
+                        np.maximum(upper - values, 0.0),
+                    )
+                )
+                axis.bar(
+                    base_positions + offsets[method_index],
+                    values,
+                    width=bar_width * 0.92,
+                    yerr=yerr,
+                    capsize=2.5,
+                    color=METHOD_COLORS[method],
+                    edgecolor="white",
+                    linewidth=0.4,
+                    error_kw={"ecolor": "black", "elinewidth": 0.9},
+                    label=method,
+                )
+            if lower_zero:
+                axis.set_ylim(bottom=0.0)
+            axis.set_title(f"{parameter} — {range_label}")
+            axis.set_ylabel(ylabel)
+            axis.set_xticks(
+                base_positions, [f"{value:,}" for value in range_values]
+            )
+            axis.set_xlabel("Twin-pair sample size N")
+            axis.grid(axis="y", alpha=0.22)
+            axis.set_axisbelow(True)
+
+    handles = [
+        Patch(facecolor=METHOD_COLORS[method], label=method) for method in methods
+    ]
+    fig.legend(
+        handles=handles,
+        loc="upper center",
+        ncol=len(methods),
+        fontsize=9,
+        bbox_to_anchor=(0.5, 0.91),
+    )
+    fig.suptitle(title, y=0.995)
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_grouped_bar_metric(
     metrics: pd.DataFrame,
     methods: tuple[str, ...],
     n_values: tuple[int, ...],
@@ -525,23 +623,17 @@ def plot_grouped_point_metric(
     path: Path,
     interval_columns: tuple[str, str],
     reference: float | None = None,
-    lower_zero: bool = False,
 ) -> None:
-    """Plot horizontally separated method estimates with confidence bars."""
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.2), squeeze=False)
+    """Draw one grouped bar panel per ACE parameter."""
+    fig, axes = plt.subplots(1, len(ACE_PARAM_NAMES), figsize=(16, 5.2), squeeze=False)
     base_positions = np.arange(len(n_values), dtype=float)
-    offsets = np.linspace(-0.28, 0.28, len(methods))
+    bar_width = 0.15
+    offsets = (
+        np.arange(len(methods), dtype=float) - (len(methods) - 1) / 2
+    ) * bar_width
 
     for column, parameter in enumerate(ACE_PARAM_NAMES):
         axis = axes[0, column]
-        if reference is not None:
-            axis.axhline(
-                reference,
-                color="black",
-                linestyle="--",
-                linewidth=1.1,
-                label=("Nominal 95%" if reference == 0.95 else "Reference"),
-            )
         for method_index, method in enumerate(methods):
             subset = (
                 metrics.loc[
@@ -560,38 +652,193 @@ def plot_grouped_point_metric(
                     np.maximum(upper - values, 0.0),
                 )
             )
-            axis.errorbar(
+            axis.bar(
                 base_positions + offsets[method_index],
                 values,
+                width=bar_width * 0.92,
                 yerr=yerr,
-                fmt=METHOD_MARKERS[method],
-                markersize=5,
-                capsize=2.5,
-                elinewidth=1.0,
+                capsize=2.2,
                 color=METHOD_COLORS[method],
-                label=method,
+                edgecolor="white",
+                linewidth=0.4,
+                error_kw={"ecolor": "black", "elinewidth": 0.8},
             )
-        if lower_zero:
-            axis.set_ylim(bottom=0.0)
-        if metric == "coverage_95":
-            minimum = float(metrics["coverage_95_ci_lo"].min())
-            axis.set_ylim(max(0.0, minimum - 0.03), 1.005)
+        if reference is not None:
+            axis.axhline(
+                reference,
+                color="black",
+                linestyle="--",
+                linewidth=1.0,
+            )
+        axis.set_ylim(0.0, 1.005 if metric == "coverage_95" else None)
         axis.set_title(parameter)
         axis.set_ylabel(ylabel)
         axis.set_xticks(base_positions, [f"{value:,}" for value in n_values])
         axis.tick_params(axis="x", labelrotation=35)
         axis.set_xlabel("Twin-pair sample size N")
         axis.grid(axis="y", alpha=0.22)
+        axis.set_axisbelow(True)
 
-    axes[0, 0].legend(fontsize=8)
-    fig.suptitle(title)
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    handles = [
+        Patch(facecolor=METHOD_COLORS[method], label=method) for method in methods
+    ]
+    fig.legend(
+        handles=handles,
+        loc="upper center",
+        ncol=len(methods),
+        fontsize=9,
+        bbox_to_anchor=(0.5, 0.88),
+    )
+    fig.suptitle(title, y=0.99)
+    fig.tight_layout(rect=(0, 0, 1, 0.80))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_split_bias_boxplots(
+    estimates: pd.DataFrame,
+    methods: tuple[str, ...],
+    n_values: tuple[int, ...],
+    title: str,
+    path: Path,
+) -> None:
+    """Plot dataset-level signed errors; diamonds show mean error (bias)."""
+    n_ranges = split_n_ranges(n_values)
+    fig, axes = plt.subplots(
+        len(n_ranges),
+        len(ACE_PARAM_NAMES),
+        figsize=(16, 4.5 * len(n_ranges)),
+        squeeze=False,
+    )
+    box_width = 0.13
+    offsets = (
+        np.arange(len(methods), dtype=float) - (len(methods) - 1) / 2
+    ) * box_width
+    annotation_offsets = np.linspace(28, -28, len(methods))
+
+    for row, (range_label, range_values) in enumerate(n_ranges):
+        base_positions = np.arange(len(range_values), dtype=float)
+        for column, parameter in enumerate(ACE_PARAM_NAMES):
+            axis = axes[row, column]
+            axis.axhline(0.0, color="black", linestyle="--", linewidth=1.0)
+            for method_index, method in enumerate(methods):
+                distributions = []
+                positions = []
+                for n_index, n_value in enumerate(range_values):
+                    values = estimates.loc[
+                        (estimates["method"] == method)
+                        & (estimates["parameter"] == parameter)
+                        & (estimates["N"] == n_value),
+                        "error",
+                    ].to_numpy(dtype=float)
+                    distributions.append(values)
+                    positions.append(base_positions[n_index] + offsets[method_index])
+                color = METHOD_COLORS[method]
+                boxplot = axis.boxplot(
+                    distributions,
+                    positions=positions,
+                    widths=box_width * 0.88,
+                    patch_artist=True,
+                    showmeans=True,
+                    showfliers=True,
+                    manage_ticks=False,
+                    medianprops={"color": "black", "linewidth": 0.9},
+                    meanprops={
+                        "marker": "D",
+                        "markerfacecolor": "white",
+                        "markeredgecolor": "black",
+                        "markersize": 3.2,
+                    },
+                    whiskerprops={"color": color, "linewidth": 0.8},
+                    capprops={"color": color, "linewidth": 0.8},
+                    flierprops={
+                        "marker": ".",
+                        "markerfacecolor": color,
+                        "markeredgecolor": color,
+                        "markersize": 1.4,
+                        "alpha": 0.22,
+                    },
+                )
+                for box in boxplot["boxes"]:
+                    box.set_facecolor(color)
+                    box.set_edgecolor(color)
+                    box.set_alpha(0.78)
+            if 20_000 in range_values:
+                n_index = range_values.index(20_000)
+                for method_index, method in enumerate(methods):
+                    values = estimates.loc[
+                        (estimates["method"] == method)
+                        & (estimates["parameter"] == parameter)
+                        & (estimates["N"] == 20_000),
+                        "error",
+                    ].to_numpy(dtype=float)
+                    mean_error = float(values.mean())
+                    mean_position = (
+                        base_positions[n_index] + offsets[method_index]
+                    )
+                    color = METHOD_COLORS[method]
+                    axis.annotate(
+                        f"{mean_error:.5f}",
+                        xy=(mean_position, mean_error),
+                        xytext=(8, annotation_offsets[method_index]),
+                        textcoords="offset points",
+                        ha="left",
+                        va="center",
+                        color=color,
+                        fontsize=7.5,
+                        bbox={
+                            "boxstyle": "round,pad=0.12",
+                            "facecolor": "white",
+                            "edgecolor": "none",
+                            "alpha": 0.80,
+                        },
+                        arrowprops={
+                            "arrowstyle": "-",
+                            "color": color,
+                            "lw": 0.6,
+                        },
+                    )
+                axis.set_xlim(-0.5, len(range_values) - 0.5 + 0.8)
+            axis.set_title(f"{parameter} — {range_label}")
+            axis.set_ylabel("Signed error (estimate - truth)")
+            axis.set_xticks(
+                base_positions, [f"{value:,}" for value in range_values]
+            )
+            axis.set_xlabel("Twin-pair sample size N")
+            axis.grid(axis="y", alpha=0.22)
+            axis.set_axisbelow(True)
+
+    handles = [
+        Patch(facecolor=METHOD_COLORS[method], label=method) for method in methods
+    ]
+    handles.append(
+        Line2D(
+            [],
+            [],
+            marker="D",
+            linestyle="none",
+            markerfacecolor="white",
+            markeredgecolor="black",
+            markersize=5,
+            label="Mean error (bias)",
+        )
+    )
+    fig.legend(
+        handles=handles,
+        loc="upper center",
+        ncol=len(handles),
+        fontsize=9,
+        bbox_to_anchor=(0.5, 0.91),
+    )
+    fig.suptitle(title, y=0.995)
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
 def save_figures(
     metrics: pd.DataFrame,
+    estimates: pd.DataFrame,
     k_values: tuple[int, ...],
     n_values: tuple[int, ...],
     n_test_datasets: int,
@@ -599,19 +846,15 @@ def save_figures(
 ) -> None:
     methods = ("OpenMx",) + tuple(method_for_k(value) for value in k_values)
     suffix = f"(M={n_test_datasets:,} test datasets per N; paired on usable OpenMx fits)"
-    plot_line_metric(
-        metrics,
+    plot_split_bias_boxplots(
+        estimates,
         methods,
         n_values,
-        "bias",
-        "Bias (estimate - truth)",
-        f"Paired bias: OpenMx versus NPE training set sizes\n{suffix}",
+        f"Paired signed-error distributions: OpenMx versus NPE training set sizes\n"
+        f"{suffix}; diamonds mark mean error (bias)",
         output_dir / "paired_bias_by_n.png",
-        interval_columns=("bias_ci_lo", "bias_ci_hi"),
-        reference=0.0,
-        annotate_n=20_000,
     )
-    plot_grouped_point_metric(
+    plot_split_grouped_bar_metric(
         metrics,
         methods,
         n_values,
@@ -633,7 +876,7 @@ def save_figures(
         lower_zero=True,
         annotate_n=20_000,
     )
-    plot_grouped_point_metric(
+    plot_split_grouped_bar_metric(
         metrics,
         methods,
         n_values,
@@ -644,7 +887,7 @@ def save_figures(
         interval_columns=("uncertainty_mean_ci_lo", "uncertainty_mean_ci_hi"),
         lower_zero=True,
     )
-    plot_grouped_point_metric(
+    plot_grouped_bar_metric(
         metrics,
         methods,
         n_values,
@@ -753,6 +996,7 @@ def main() -> None:
     write_csv_atomic(metrics, metrics_path)
     save_figures(
         metrics,
+        estimates,
         args.k_values,
         n_values,
         n_test_datasets,
