@@ -349,6 +349,22 @@ def build_paired_estimates(
         & (output["truth"] >= output["ci_lower"])
         & (output["truth"] <= output["ci_upper"])
     )
+    output["mean_sd_ci_lower"] = (
+        output["estimate"] - 1.96 * output["uncertainty"]
+    )
+    output["mean_sd_ci_upper"] = (
+        output["estimate"] + 1.96 * output["uncertainty"]
+    )
+    output["mean_sd_interval_valid"] = (
+        np.isfinite(output["mean_sd_ci_lower"])
+        & np.isfinite(output["mean_sd_ci_upper"])
+        & (output["uncertainty"] >= 0)
+    )
+    output["covered_95_mean_sd"] = (
+        output["mean_sd_interval_valid"]
+        & (output["truth"] >= output["mean_sd_ci_lower"])
+        & (output["truth"] <= output["mean_sd_ci_upper"])
+    )
     return output.sort_values(
         ["N", "parameter", "method", "test_dataset_m"]
     ).reset_index(drop=True)
@@ -367,6 +383,10 @@ def summarize_metrics(
         uncertainty = group["uncertainty"].to_numpy(dtype=float)
         interval_group = group.loc[group["interval_valid"]]
         covered = interval_group["covered_95"].to_numpy(dtype=bool)
+        mean_sd_group = group.loc[group["mean_sd_interval_valid"]]
+        covered_mean_sd = mean_sd_group["covered_95_mean_sd"].to_numpy(
+            dtype=bool
+        )
         count = len(group)
 
         bias = float(errors.mean())
@@ -385,6 +405,9 @@ def summarize_metrics(
         )
         coverage_lower, coverage_upper = wilson_interval(
             int(covered.sum()), len(covered)
+        )
+        mean_sd_coverage_lower, mean_sd_coverage_upper = wilson_interval(
+            int(covered_mean_sd.sum()), len(covered_mean_sd)
         )
         rows.append(
             {
@@ -416,6 +439,10 @@ def summarize_metrics(
                 "n_coverage": len(covered),
                 "coverage_95_ci_lo": coverage_lower,
                 "coverage_95_ci_hi": coverage_upper,
+                "coverage_95_mean_sd": float(covered_mean_sd.mean()),
+                "n_coverage_mean_sd": len(covered_mean_sd),
+                "coverage_95_mean_sd_ci_lo": mean_sd_coverage_lower,
+                "coverage_95_mean_sd_ci_hi": mean_sd_coverage_upper,
             }
         )
     output = pd.DataFrame(rows)
@@ -532,8 +559,8 @@ def plot_line_metric(
                 )
         if lower_zero:
             axis.set_ylim(bottom=0.0)
-        if metric == "coverage_95":
-            minimum = float(metrics["coverage_95_ci_lo"].min())
+        if metric.startswith("coverage_95") and interval_columns is not None:
+            minimum = float(metrics[interval_columns[0]].min())
             axis.set_ylim(max(0.0, minimum - 0.03), 1.005)
         axis.set_title(parameter)
         axis.set_ylabel(ylabel)
@@ -910,10 +937,26 @@ def save_figures(
         methods,
         n_values,
         "coverage_95",
-        "Empirical 95% coverage",
-        f"Paired 95% interval coverage\n{suffix}",
+        "Native 95% interval coverage",
+        "Native 95% interval coverage: OpenMx Wald versus NPE quantiles\n"
+        f"{suffix}",
         output_dir / "paired_coverage_by_n.png",
         interval_columns=("coverage_95_ci_lo", "coverage_95_ci_hi"),
+        reference=0.95,
+    )
+    plot_line_metric(
+        metrics,
+        methods,
+        n_values,
+        "coverage_95_mean_sd",
+        "Mean ± 1.96 uncertainty coverage",
+        "Symmetric 95% coverage: estimate ± 1.96 uncertainty\n"
+        f"{suffix}; OpenMx SE and NPE posterior SD",
+        output_dir / "paired_coverage_mean_pm_1_96sd_by_n.png",
+        interval_columns=(
+            "coverage_95_mean_sd_ci_lo",
+            "coverage_95_mean_sd_ci_hi",
+        ),
         reference=0.95,
     )
     for multiplier in UNCERTAINTY_MULTIPLIERS:
@@ -1058,6 +1101,12 @@ def main() -> None:
         "metrics_use_common_openmx_converged_rows": True,
         "openmx_uncertainty": "delta-method standard error",
         "npe_uncertainty": "posterior standard deviation",
+        "native_coverage": (
+            "OpenMx estimate +/- 1.96 SE; NPE posterior 2.5%-97.5% quantiles"
+        ),
+        "symmetric_coverage": (
+            "estimate +/- 1.96 uncertainty for every method"
+        ),
         "npe_models_retrained": False,
         "uncertainty_exceedance_multipliers": list(UNCERTAINTY_MULTIPLIERS),
         "paired_data_sha256": paired_fingerprint,

@@ -111,6 +111,11 @@ boxplots of dataset-level signed errors, with diamonds marking mean error.
 The bias, MAE, and mean-uncertainty figures use separate panels for
 `N <= 1,000` and `N > 1,000`. MAE and mean uncertainty use grouped bars with
 95% confidence-interval error bars, while RMSE and coverage use line plots.
+`paired_coverage_by_n.png` uses the native intervals: OpenMx estimate
+`+/- 1.96 SE` and NPE posterior 2.5%-97.5% quantiles. The additional
+`paired_coverage_mean_pm_1_96sd_by_n.png` applies estimate
+`+/- 1.96 uncertainty` to every method, using the OpenMx SE or NPE posterior
+SD, so the effect of NPE posterior shape can be assessed directly.
 MAE labels values at `N = 5,000` and `N = 20,000`; mean uncertainty labels
 values at `N = 1,000` and `N = 20,000`; RMSE labels values at `N = 20,000`.
 The bias boxplot has no text annotations. Two additional figures,
