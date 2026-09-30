@@ -58,6 +58,10 @@ python 08_compare_fixed_n_dirichlet_openmx.py
 # 08b — paired OpenMx vs NPE-100k/200k/300k/500k using STEP 03b tests
 python 08b_compare_training_sizes_openmx.py
 
+# 09 — SBC ECDF, recovery, and contraction for K=100k/300k/500k
+#      -> results/step09_npe_diagnostics/
+python 09_npe_diagnostics.py --run-all
+
 # 10 — evaluate the 100k-simulation fixed-N models on 500 repeated datasets
 #      at theta=(0.4,0.3,0.3)
 python 10_evaluate_fixed_theta.py
@@ -125,6 +129,25 @@ absolute errors exceed one or two times their own uncertainty. The comparison
 uses each OpenMx estimate's SE and each NPE posterior's SD, rather than a
 common SD. The underlying counts and proportions are saved in
 `uncertainty_exceedance_counts.csv`.
+
+STEP 09 is the compact first-pass diagnostic suite. It trains one transient
+model for every combination of `K = 100k, 300k, 500k` and
+`N = 50, 100, 500, 1000, 2000, 5000, 20000`, then evaluates `M = 1000`
+shared test datasets with `L = 2000` posterior draws. Separate figures are
+created for each N: SBC calibration ECDF, posterior-mean recovery, and
+posterior z-score versus contraction. NRMSE and R-squared are plotted over N.
+Models and full posterior draws remain in memory and are discarded; only
+compact results, metrics, runtimes, configuration, and figures are retained in
+`results/step09_npe_diagnostics/`.
+
+On CU Boulder Alpine, submit the 21-cell array and dependent aggregation job:
+
+```bash
+diagnostic_job=$(sbatch --parsable ace_npe/09_npe_diagnostics.sh)
+
+sbatch --dependency=afterok:"$diagnostic_job" \
+  ace_npe/09_aggregate_npe_diagnostics.sh
+```
 
 STEP 10 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model
@@ -248,6 +271,10 @@ ace_npe/
 ├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
 ├── 08b_compare_training_sizes_openmx.py  OpenMx vs four STEP 03b NPE sizes
 ├── 08b_compare_training_sizes_openmx.sh  Alpine submission for STEP 08b
+├── 09_npe_diagnostics.py            SBC, recovery, and contraction diagnostics
+├── 09_npe_diagnostics.sh            Alpine 21-cell array for STEP 09
+├── 09_aggregate_npe_diagnostics.sh  aggregate and plot STEP 09
+├── training_budget_utils.py         shared fixed-N transient NPE utilities
 ├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
 ├── 10b_fixed_theta_npe_ensemble.py   reevaluate 100 saved NPEs at N=1000
 ├── 10c_decompose_fixed_theta_variance.py  fixed-theta uncertainty comparison
@@ -270,6 +297,7 @@ ace_npe/
     ├── analysis/                     STEP 06 figures and summary tables
     ├── se_calibration/               STEP 07 SE-calibration figures + tables
     ├── oos/<run>/                    STEP 03 calibration output
+    ├── step09_npe_diagnostics/       STEP 09 tables, configuration, and figures
     └── demo/                         demo notebook figures
 ```
 
