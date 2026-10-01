@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import gc
 import json
-import math
 import shutil
 import sys
 import time
@@ -34,6 +33,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+from scipy.stats import binom
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ace_model import ACE_PARAM_NAMES, RESULTS_DIR, resolve
@@ -51,7 +51,10 @@ DEFAULT_N_VALUES = (50, 100, 500, 1_000, 2_000, 5_000, 20_000)
 DEFAULT_OUTPUT_DIR = "step06_npe_diagnostics"
 PRIOR_VARIANCE = 1.0 / 18.0  # Marginal variance under Dirichlet(1, 1, 1).
 PRIOR_RANGE = 1.0
-ECDF_REFERENCE_PROBABILITY = 0.99
+ECDF_REFERENCE_PROBABILITY = 0.95
+ECDF_BAND_SIMULATIONS = 1_000
+ECDF_BAND_SEED = 20_260_306
+ECDF_BAND_MAX_POINTS = 1_000
 K_COLORS = {
     100_000: "#4477AA",
     300_000: "#EE6677",
@@ -208,6 +211,49 @@ def compute_metrics(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def simultaneous_ecdf_band(
+    n_estimates: int,
+    confidence: float = ECDF_REFERENCE_PROBABILITY,
+    n_simulations: int = ECDF_BAND_SIMULATIONS,
+    seed: int = ECDF_BAND_SEED,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return BayesFlow-style simultaneous uniform-ECDF difference bands.
+
+    This follows the simulation and binomial-quantile construction of
+    Saeilynoja, Buerkner, and Vehtari (2022), as used by BayesFlow's
+    ``simultaneous_ecdf_bands`` utility.
+    """
+    if n_estimates < 2:
+        raise ValueError("At least two estimates are required for an ECDF band")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("ECDF band confidence must lie strictly between 0 and 1")
+
+    rng = np.random.default_rng(seed)
+    z = np.linspace(1e-5, 1.0 - 1e-5, min(n_estimates, ECDF_BAND_MAX_POINTS))
+    gammas = np.empty(n_simulations, dtype=float)
+
+    # Sorting plus searchsorted is equivalent to BayesFlow's broadcasted count,
+    # but avoids constructing a potentially gigabyte-sized M x K x N array.
+    for simulation_index in range(n_simulations):
+        uniform_order_stats = np.sort(rng.random(n_estimates))
+        empirical_counts = np.searchsorted(uniform_order_stats, z, side="right")
+        lower_tail = binom.cdf(empirical_counts, n_estimates, z)
+        upper_tail = 1.0 - binom.cdf(empirical_counts - 1, n_estimates, z)
+        gammas[simulation_index] = 2.0 * np.min(
+            np.minimum(lower_tail, upper_tail)
+        )
+
+    simultaneous_alpha = 1.0 - confidence
+    pointwise_alpha = float(
+        np.percentile(gammas, 100.0 * simultaneous_alpha)
+    )
+    lower_cdf = binom.ppf(pointwise_alpha / 2.0, n_estimates, z) / n_estimates
+    upper_cdf = (
+        binom.ppf(1.0 - pointwise_alpha / 2.0, n_estimates, z) / n_estimates
+    )
+    return z, lower_cdf - z, upper_cdf - z
+
+
 def save_calibration_ecdf(
     results: pd.DataFrame,
     n_value: int,
@@ -215,14 +261,14 @@ def save_calibration_ecdf(
     n_draws: int,
     path: Path,
 ) -> None:
-    """Plot SBC rank ECDF-minus-uniform with a simultaneous DKW band."""
+    """Plot SBC rank ECDF-minus-uniform with a tapered simultaneous band."""
     fig, axes = plt.subplots(
         len(ACE_PARAM_NAMES), len(k_values), figsize=(13.5, 11.0), squeeze=False
     )
     fig.suptitle(
         f"SBC calibration ECDF (N={n_value:,}; L={n_draws:,})", fontsize=15
     )
-    alpha = 1.0 - ECDF_REFERENCE_PROBABILITY
+    reference_bands: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
     for row_index, parameter in enumerate(ACE_PARAM_NAMES):
         for column_index, k_value in enumerate(k_values):
@@ -243,11 +289,11 @@ def save_calibration_ecdf(
             counts = np.bincount(ranks, minlength=n_draws + 1)
             observed_cdf = np.cumsum(counts) / len(ranks)
             difference = observed_cdf - expected_cdf
-            epsilon = math.sqrt(math.log(2.0 / alpha) / (2.0 * len(ranks)))
-            lower = np.maximum(0.0, expected_cdf - epsilon) - expected_cdf
-            upper = np.minimum(1.0, expected_cdf + epsilon) - expected_cdf
+            if len(ranks) not in reference_bands:
+                reference_bands[len(ranks)] = simultaneous_ecdf_band(len(ranks))
+            band_x, lower, upper = reference_bands[len(ranks)]
 
-            axis.fill_between(expected_cdf, lower, upper, color="0.88", linewidth=0)
+            axis.fill_between(band_x, lower, upper, color="0.88", linewidth=0)
             axis.plot(
                 expected_cdf,
                 difference,
@@ -267,7 +313,7 @@ def save_calibration_ecdf(
     fig.text(
         0.5,
         0.01,
-        "Gray region: 99% simultaneous Dvoretzky-Kiefer-Wolfowitz reference band",
+        "Gray region: 95% simulation-calibrated simultaneous ECDF reference band",
         ha="center",
         fontsize=9,
         color="0.3",
@@ -435,6 +481,52 @@ def save_metric_over_n(
     plt.close(fig)
 
 
+def save_all_figures(
+    results: pd.DataFrame,
+    metrics: pd.DataFrame,
+    args: argparse.Namespace,
+    figures_dir: Path,
+) -> None:
+    """Create every diagnostic figure from retained tabular results."""
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    for n_value in args.n_values:
+        save_calibration_ecdf(
+            results,
+            n_value,
+            args.k_values,
+            args.n_posterior_draws,
+            figures_dir / f"calibration_ecdf_N{n_value}.png",
+        )
+        save_recovery(
+            results,
+            metrics,
+            n_value,
+            args.k_values,
+            figures_dir / f"recovery_N{n_value}.png",
+        )
+        save_z_score_contraction(
+            results,
+            n_value,
+            args.k_values,
+            figures_dir / f"z_score_contraction_N{n_value}.png",
+        )
+
+    save_metric_over_n(
+        metrics,
+        "nrmse",
+        "Normalized root mean squared error",
+        args.k_values,
+        figures_dir / "nrmse_by_n.png",
+    )
+    save_metric_over_n(
+        metrics,
+        "r_squared",
+        r"$R^2$",
+        args.k_values,
+        figures_dir / "r_squared_by_n.png",
+    )
+
+
 def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     pairs = cell_pairs(args.k_values, args.n_values)
     cells_dir = output_dir / "cells"
@@ -504,43 +596,7 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     write_csv_atomic(results, output_dir / "diagnostic_results.csv")
     write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
     write_csv_atomic(pd.DataFrame(metadata_rows), output_dir / "cell_runtimes.csv")
-
-    for n_value in args.n_values:
-        save_calibration_ecdf(
-            results,
-            n_value,
-            args.k_values,
-            args.n_posterior_draws,
-            figures_dir / f"calibration_ecdf_N{n_value}.png",
-        )
-        save_recovery(
-            results,
-            metrics,
-            n_value,
-            args.k_values,
-            figures_dir / f"recovery_N{n_value}.png",
-        )
-        save_z_score_contraction(
-            results,
-            n_value,
-            args.k_values,
-            figures_dir / f"z_score_contraction_N{n_value}.png",
-        )
-
-    save_metric_over_n(
-        metrics,
-        "nrmse",
-        "Normalized root mean squared error",
-        args.k_values,
-        figures_dir / "nrmse_by_n.png",
-    )
-    save_metric_over_n(
-        metrics,
-        "r_squared",
-        r"$R^2$",
-        args.k_values,
-        figures_dir / "r_squared_by_n.png",
-    )
+    save_all_figures(results, metrics, args, figures_dir)
 
     config = {
         "step": "06_npe_diagnostics",
@@ -553,6 +609,9 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
         "prior_marginal_variance": PRIOR_VARIANCE,
         "nrmse_normalization_range": PRIOR_RANGE,
         "ecdf_reference_probability": ECDF_REFERENCE_PROBABILITY,
+        "ecdf_band_simulations": ECDF_BAND_SIMULATIONS,
+        "ecdf_band_seed": ECDF_BAND_SEED,
+        "ecdf_band_max_points": ECDF_BAND_MAX_POINTS,
         "models_saved": False,
         "posterior_draws_saved": False,
         "training": {
@@ -574,6 +633,45 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     print(f"Saved STEP 06 diagnostic tables and figures -> {output_dir}")
 
 
+def replot(args: argparse.Namespace, output_dir: Path) -> None:
+    """Regenerate figures from consolidated results without retraining."""
+    results_path = output_dir / "diagnostic_results.csv"
+    config_path = output_dir / "config.json"
+    if not results_path.exists() or not config_path.exists():
+        raise FileNotFoundError(
+            "Replotting requires diagnostic_results.csv and config.json in "
+            f"{output_dir}"
+        )
+
+    with open(config_path) as handle:
+        config = json.load(handle)
+    args.k_values = tuple(int(value) for value in config["K_values"])
+    args.n_values = tuple(int(value) for value in config["N_values"])
+    args.n_test_datasets = int(config["M"])
+    args.n_posterior_draws = int(config["L"])
+    print(
+        f"Replotting STEP 06: H=1; M={args.n_test_datasets:,}; "
+        f"L={args.n_posterior_draws:,}; "
+        f"cells={len(args.k_values) * len(args.n_values)}"
+    )
+
+    results = pd.read_csv(results_path)
+    metrics = compute_metrics(results)
+    write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
+    save_all_figures(results, metrics, args, output_dir / "figures")
+
+    config.update(
+        {
+            "ecdf_reference_probability": ECDF_REFERENCE_PROBABILITY,
+            "ecdf_band_simulations": ECDF_BAND_SIMULATIONS,
+            "ecdf_band_seed": ECDF_BAND_SEED,
+            "ecdf_band_max_points": ECDF_BAND_MAX_POINTS,
+        }
+    )
+    write_json_atomic(config, config_path)
+    print(f"Regenerated STEP 06 diagnostic figures -> {output_dir / 'figures'}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run SBC, recovery, and contraction diagnostics for ACE NPEs"
@@ -581,6 +679,7 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--cell-index", type=int, help="One-based K x N array index")
     mode.add_argument("--aggregate", action="store_true")
+    mode.add_argument("--replot", action="store_true", help="Replot retained results")
     mode.add_argument("--run-all", action="store_true", help="Local sequential run")
     parser.add_argument("--k-values", type=int, nargs="+", default=list(DEFAULT_K_VALUES))
     parser.add_argument("--n-values", type=int, nargs="+", default=list(DEFAULT_N_VALUES))
@@ -629,6 +728,10 @@ def main() -> None:
     args = parse_args()
     output_dir = resolve(args.output_dir, RESULTS_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.replot:
+        replot(args, output_dir)
+        return
+
     pairs = cell_pairs(args.k_values, args.n_values)
     print(
         f"STEP 06: H=1; M={args.n_test_datasets:,}; L={args.n_posterior_draws:,}; "
