@@ -1,8 +1,8 @@
-"""STEP 09 -- Core diagnostics for the fixed-N ACE NPEs.
+"""STEP 06 -- Core diagnostics for the fixed-N ACE NPEs.
 
 This experiment trains one transient NPE for each training-budget/sample-size
 cell and evaluates it using the same simulation and training conventions as
-STEP 03b.  The fitted NPE is kept only in memory and is discarded immediately
+STEP 03.  The fitted NPE is kept only in memory and is discarded immediately
 after its cell has been summarized.
 
 Default design
@@ -48,7 +48,7 @@ from training_budget_utils import (
 
 DEFAULT_K_VALUES = (100_000, 300_000, 500_000)
 DEFAULT_N_VALUES = (50, 100, 500, 1_000, 2_000, 5_000, 20_000)
-DEFAULT_OUTPUT_DIR = "step09_npe_diagnostics"
+DEFAULT_OUTPUT_DIR = "step06_npe_diagnostics"
 PRIOR_VARIANCE = 1.0 / 18.0  # Marginal variance under Dirichlet(1, 1, 1).
 PRIOR_RANGE = 1.0
 ECDF_REFERENCE_PROBABILITY = 0.99
@@ -543,7 +543,7 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     )
 
     config = {
-        "step": "09_npe_diagnostics",
+        "step": "06_npe_diagnostics",
         "K_values": list(args.k_values),
         "N_values": list(args.n_values),
         "H": 1,
@@ -571,7 +571,7 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
 
     if not args.keep_cell_files:
         shutil.rmtree(cells_dir)
-    print(f"Saved STEP 09 diagnostic tables and figures -> {output_dir}")
+    print(f"Saved STEP 06 diagnostic tables and figures -> {output_dir}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -631,7 +631,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     pairs = cell_pairs(args.k_values, args.n_values)
     print(
-        f"STEP 09: H=1; M={args.n_test_datasets:,}; L={args.n_posterior_draws:,}; "
+        f"STEP 06: H=1; M={args.n_test_datasets:,}; L={args.n_posterior_draws:,}; "
         f"cells={len(pairs)}"
     )
     if args.aggregate:

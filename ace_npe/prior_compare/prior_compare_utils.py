@@ -142,7 +142,7 @@ def generate_dataset(
 
     # Separate random streams prevent parameter sampling from changing the N
     # schedule or the covariance-noise stream.  This lets all three schemes use
-    # exactly the same N values in 01b and 03b.
+    # exactly the same N values in the generation and comparison steps.
     theta_rng = np.random.default_rng(seed + 1)
     n_rng = np.random.default_rng(seed + 2)
     ace = sample_ace(

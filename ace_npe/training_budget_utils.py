@@ -1,6 +1,6 @@
 """Shared fixed-N simulation, transient training, and evaluation utilities.
 
-STEP 03b and STEP 09 intentionally use these same functions so their training
+STEP 03 and STEP 06 intentionally use these same functions so their training
 and diagnostic results differ only in the requested K grid and output plots.
 """
 

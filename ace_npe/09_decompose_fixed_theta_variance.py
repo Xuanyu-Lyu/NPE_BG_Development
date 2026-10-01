@@ -1,6 +1,6 @@
-"""STEP 10c -- compare fixed-theta uncertainty sources.
+"""STEP 09 -- compare fixed-theta uncertainty sources.
 
-This script reuses the fully crossed STEP 10b evaluation: 100 independently
+This script reuses the fully crossed STEP 08 evaluation: 100 independently
 trained NPEs evaluated on the same 500 fixed-theta datasets. The datasets are
 randomly divided into five blocks of 100. For every ACE parameter it reports:
 
@@ -58,7 +58,7 @@ def load_evaluation(
     n_replicates: int,
     requested_draws: int,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray, int]:
-    """Load and validate the completed, shared-dataset STEP 10b results."""
+    """Load and validate the completed, shared-dataset STEP 08 results."""
     means_by_parameter: dict[str, list[np.ndarray]] = {
         parameter: [] for parameter in ACE_PARAM_NAMES
     }
@@ -75,7 +75,7 @@ def load_evaluation(
         complete_path = replicate_dir / "COMPLETE"
         if not complete_path.exists() or not result_path.exists():
             raise FileNotFoundError(
-                f"Missing completed STEP 10b replicate {replicate}: {result_path}"
+                f"Missing completed STEP 08 replicate {replicate}: {result_path}"
             )
 
         config_path = replicate_dir / "config.json"
@@ -122,7 +122,7 @@ def load_evaluation(
                 atol=1e-10,
             ):
                 raise ValueError(
-                    "STEP 10c requires shared test datasets, but replicate "
+                    "STEP 09 requires shared test datasets, but replicate "
                     f"{replicate} contains different data"
                 )
 
@@ -142,8 +142,8 @@ def load_evaluation(
         )
     if recorded_draw_counts and recorded_draw_counts != {requested_draws}:
         raise ValueError(
-            f"STEP 10b used {next(iter(recorded_draw_counts))} posterior draws, "
-            f"but STEP 10c was given --n_posterior_draws={requested_draws}"
+            f"STEP 08 used {next(iter(recorded_draw_counts))} posterior draws, "
+            f"but STEP 09 was given --n_posterior_draws={requested_draws}"
         )
     assert dataset_ids is not None
     means_arrays = {
@@ -493,7 +493,7 @@ def main() -> None:
     ensemble_dir = resolve(args.ensemble_dir, RESULTS_DIR)
     output_dir = resolve(args.output_dir, RESULTS_DIR)
     if not ensemble_dir.is_dir():
-        raise FileNotFoundError(f"STEP 10b evaluation directory not found: {ensemble_dir}")
+        raise FileNotFoundError(f"STEP 08 evaluation directory not found: {ensemble_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     means, posterior_sds, dataset_ids, n_draws = load_evaluation(
@@ -610,7 +610,7 @@ def main() -> None:
         json.dump(config, handle, indent=2)
     (output_dir / "COMPLETE").write_text("uncertainty comparison complete\n")
 
-    print(f"STEP 10c complete: {output_dir}")
+    print(f"STEP 09 complete: {output_dir}")
     print(f"Point estimates:  {estimates_path}")
     print(f"Variance summary: {variance_summary_path}")
     print(f"SE summary:       {se_summary_path}")

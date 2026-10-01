@@ -1,4 +1,4 @@
-"""STEP 10 -- evaluate 100k-simulation fixed-N NPEs at one ACE condition.
+"""STEP 07 -- evaluate 100k-simulation fixed-N NPEs at one ACE condition.
 
 The default experiment evaluates the existing N=50, 100, 500, and 1000 NPEs
 trained from 100,000 prior-predictive simulations per N. For each N it

@@ -1,13 +1,13 @@
-"""STEP 08b -- compare OpenMx with NPEs trained at four set sizes.
+"""STEP 05 -- compare OpenMx with NPEs trained at four set sizes.
 
-This script consumes the final STEP 03b per-test posterior summaries.  It
-regenerates the exact same M covariance datasets from STEP 03b's recorded seed,
+This script consumes the final STEP 03 per-test posterior summaries.  It
+regenerates the exact same M covariance datasets from STEP 03's recorded seed,
 fits OpenMx to those covariances, and compares five methods on common usable
 rows within every N:
 
     OpenMx, NPE-100k, NPE-200k, NPE-300k, and NPE-500k.
 
-No NPE is retrained or loaded.  The comparison is possible because STEP 03b
+No NPE is retrained or loaded.  The comparison is possible because STEP 03
 retains posterior summaries for each test dataset even though it discards the
 transient fitted models and raw posterior draws.
 """
@@ -34,7 +34,7 @@ from ace_model import ACE_PARAM_NAMES, RESULTS_DIR, resolve
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-STEP_03B = runpy.run_path(str(SCRIPT_DIR / "03b_training_budget_grid.py"))
+STEP_03 = runpy.run_path(str(SCRIPT_DIR / "03_training_budget_grid.py"))
 DEFAULT_K_VALUES = (100_000, 200_000, 300_000, 500_000)
 METHOD_COLORS = {
     "OpenMx": "#1f4e79",
@@ -110,27 +110,27 @@ def load_grid_inputs(
     complete_path = grid_dir / "COMPLETE"
     if not config_path.exists() or not summaries_path.exists():
         raise FileNotFoundError(
-            f"STEP 03b outputs are incomplete in {grid_dir}; expected "
+            f"STEP 03 outputs are incomplete in {grid_dir}; expected "
             "config.json and training_budget_test_summaries.csv"
         )
     if not complete_path.exists():
         raise FileNotFoundError(
-            f"Missing {complete_path}; wait for STEP 03b aggregation to finish"
+            f"Missing {complete_path}; wait for STEP 03 aggregation to finish"
         )
     with open(config_path) as handle:
         config = json.load(handle)
     if int(config.get("H", -1)) != 1:
-        raise ValueError("STEP 08b expects H=1 in the STEP 03b results")
+        raise ValueError("STEP 05 expects H=1 in the STEP 03 results")
     available_k = tuple(int(value) for value in config.get("K_values", ()))
     missing_k = sorted(set(requested_k).difference(available_k))
     if missing_k:
         raise ValueError(
-            f"STEP 03b results do not contain K={missing_k}; rerun the expanded "
-            "49-cell STEP 03b grid before STEP 08b"
+            f"STEP 03 results do not contain K={missing_k}; rerun the expanded "
+            "49-cell STEP 03 grid before STEP 05"
         )
     n_values = tuple(int(value) for value in config.get("N_values", ()))
     if not n_values:
-        raise ValueError("STEP 03b config has no N_values")
+        raise ValueError("STEP 03 config has no N_values")
 
     summaries = pd.read_csv(summaries_path)
     required = {
@@ -148,7 +148,7 @@ def load_grid_inputs(
     missing_columns = sorted(required.difference(summaries.columns))
     if missing_columns:
         raise ValueError(
-            f"STEP 03b summaries are missing columns: {missing_columns}"
+            f"STEP 03 summaries are missing columns: {missing_columns}"
         )
     summaries = summaries.loc[summaries["K"].isin(requested_k)].copy()
     summaries["K"] = summaries["K"].astype(int)
@@ -161,13 +161,13 @@ def regenerate_paired_data(
     config: dict,
     n_values: tuple[int, ...],
 ) -> pd.DataFrame:
-    """Regenerate the exact STEP 03b test covariance matrices."""
+    """Regenerate the exact STEP 03 test covariance matrices."""
     n_test_datasets = int(config["M"])
     base_seed = int(config["seed"])
     frames = []
     for n_value in n_values:
-        test_seed = STEP_03B["seed_from"](base_seed, n_value, 20)
-        _, ace, covariance_data = STEP_03B["simulate_fixed_n"](
+        test_seed = STEP_03["seed_from"](base_seed, n_value, 20)
+        _, ace, covariance_data = STEP_03["simulate_fixed_n"](
             n_test_datasets,
             n_value,
             test_seed,
@@ -197,16 +197,16 @@ def validate_pairing(
     )
     if len(summaries) != expected_rows:
         raise ValueError(
-            f"Selected STEP 03b summaries have {len(summaries):,} rows; "
+            f"Selected STEP 03 summaries have {len(summaries):,} rows; "
             f"expected {expected_rows:,}"
         )
     counts = summaries.groupby(["K", "N", "parameter"]).size()
     if not (counts == n_test_datasets).all():
         raise ValueError("Every (K,N,parameter) must contain exactly M test rows")
     if set(summaries["K"]) != set(k_values):
-        raise ValueError("STEP 03b summaries do not contain every requested K")
+        raise ValueError("STEP 03 summaries do not contain every requested K")
     if set(summaries["N"]) != set(n_values):
-        raise ValueError("STEP 03b summaries do not contain every requested N")
+        raise ValueError("STEP 03 summaries do not contain every requested N")
 
     truth_long = paired.melt(
         id_vars=["condition_id", "N_pairs"],
@@ -228,13 +228,13 @@ def validate_pairing(
         validate="one_to_one",
     )
     if checked["regenerated_truth"].isna().any():
-        raise ValueError("Some STEP 03b test truths could not be regenerated")
+        raise ValueError("Some STEP 03 test truths could not be regenerated")
     maximum_difference = np.max(
         np.abs(checked["truth"] - checked["regenerated_truth"])
     )
     if maximum_difference > 1e-7:
         raise ValueError(
-            "Regenerated test data do not match STEP 03b; maximum truth "
+            "Regenerated test data do not match STEP 03; maximum truth "
             f"difference is {maximum_difference:g}"
         )
 
@@ -988,7 +988,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rscript", default="Rscript")
     parser.add_argument(
         "--openmx-backend",
-        default=str(SCRIPT_DIR / "08_fit_openmx_paired_dirichlet.R"),
+        default=str(SCRIPT_DIR / "04_fit_openmx_paired_dirichlet.R"),
     )
     parser.add_argument(
         "--reuse-openmx",

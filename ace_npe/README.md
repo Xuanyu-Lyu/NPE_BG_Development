@@ -25,58 +25,40 @@ python 01_generate_training_data.py --n_samples 50000
 python 02_train_npe.py --data ace_training_data.csv --include_n_pairs \
                        --epochs 500 --device cpu --output se_proxy
 
-# 03 — out-of-sample calibration check -> results/oos/se_proxy/
-python 03_evaluate_oos_predictions.py --model_dir se_proxy
-
-# 03b — choose an NPE training set size K across fixed sample sizes N
+# 03 — choose an NPE training set size K across fixed sample sizes N
 #        H=1 model/cell, M=1000 tests, L=2000 posterior draws
 #        -> results/training_budget_grid/
-python 03b_training_budget_grid.py --run-all
+python 03_training_budget_grid.py --run-all
 
-# 04 — OpenMx reference + shared test conditions
-Rscript 04_fit_openmx_reference.R
+# 04 — paired OpenMx vs fixed-N Dirichlet NPE comparison
+python 04_compare_fixed_n_dirichlet_openmx.py
 
-# 05 — NPE on the same test conditions -> results/simulations/
-python 05_simulate_posterior_recovery.py --model_dir se_proxy \
-       --output npe_simulation_results.csv
-python 05_simulate_posterior_recovery.py --model_dir no_n_pairs_dirichlet \
-       --output npe_simulation_results_no_n.csv
+# 05 — paired OpenMx vs NPE-100k/200k/300k/500k using STEP 03 tests
+python 05_compare_training_sizes_openmx.py
 
-# 06 — comparison figures and tables   -> results/analysis/
-jupyter lab 06_analysis.ipynb
+# 06 — SBC ECDF, recovery, and contraction for K=100k/300k/500k
+#      -> results/step06_npe_diagnostics/
+python 06_npe_diagnostics.py --run-all
 
-# 07 — is the reported SE correct?     -> results/se_calibration/
-#      Monte-Carlo: replicate the SAME condition 200x, so the spread of the
-#      estimates is the TRUE sampling SE to compare the posterior SD against.
-python 05_simulate_posterior_recovery.py --model_dir se_proxy \
-       --n_conditions 24 --n_reps 200 --output npe_se_montecarlo.csv
-jupyter lab 07_se_calibration.ipynb
-
-# 08 — paired OpenMx vs fixed-N Dirichlet NPE comparison
-python 08_compare_fixed_n_dirichlet_openmx.py
-
-# 08b — paired OpenMx vs NPE-100k/200k/300k/500k using STEP 03b tests
-python 08b_compare_training_sizes_openmx.py
-
-# 09 — SBC ECDF, recovery, and contraction for K=100k/300k/500k
-#      -> results/step09_npe_diagnostics/
-python 09_npe_diagnostics.py --run-all
-
-# 10 — evaluate the 100k-simulation fixed-N models on 500 repeated datasets
+# 07 — evaluate the 100k-simulation fixed-N models on 500 repeated datasets
 #      at theta=(0.4,0.3,0.3)
-python 10_evaluate_fixed_theta.py
+python 07_evaluate_fixed_theta.py
 
-# 10c — compare fixed-theta total, model, dataset, and posterior uncertainty
-python 10c_decompose_fixed_theta_variance.py
+# 08 — reevaluate the saved 100-model fixed-theta NPE ensemble
+python 08_fixed_theta_npe_ensemble.py aggregate
 
-# 11 — paired fixed-theta comparison of the 100 NPEs with a grid posterior
-Rscript 11_compare_fixed_theta_npe_grid.R
+# 09 — compare fixed-theta total, model, dataset, and posterior uncertainty
+python 09_decompose_fixed_theta_variance.py
 
-# On CU Boulder Alpine, submit STEP 11 from the repository root:
-sbatch ace_npe/11_compare_fixed_theta_npe_grid.sh
+# 10 — paired fixed-theta comparison of the 100 NPEs with a grid posterior
+Rscript 10_compare_fixed_theta_npe_grid.R
 ```
 
-STEP 03b precedes the formal fixed-N OpenMx comparison so that the NPE
+The former Steps 03–07 and demo notebook are retained with an `archive_`
+prefix. They document the original coworker workflow but are not part of the
+active quick start above; see **Archived legacy workflow** below.
+
+STEP 03 precedes the formal fixed-N OpenMx comparison so that the NPE
 training set size is selected without using OpenMx results. Its default grid is
 `K = 10k, 20k, 50k, 100k, 200k, 300k, 500k` by
 `N = 50, 100, 500, 1000, 2000, 5000, 20000`. Each cell trains one transient
@@ -89,24 +71,24 @@ On CU Boulder Alpine, submit the 49-cell array and its aggregation dependency
 from the repository root:
 
 ```bash
-grid_job=$(sbatch --parsable ace_npe/03b_training_budget_grid.sh)
+grid_job=$(sbatch --parsable ace_npe/03_training_budget_grid.sh)
 
 sbatch --dependency=afterok:"$grid_job" \
-  ace_npe/03b_aggregate_training_budget_grid.sh
+  ace_npe/03_aggregate_training_budget_grid.sh
 ```
 
 The aggregation job creates distributions of estimation error, absolute
 error, posterior kurtosis, posterior skewness, and posterior SD. It removes
-the temporary per-cell files after verifying and combining all 35 cells.
+the temporary per-cell files after verifying and combining all 49 cells.
 Here `M` is the number of test datasets and `L` is the number of posterior
 draws, matching the SBC notation.
 
-After STEP 03b completes, STEP 08b regenerates its exact shared test covariance
+After STEP 03 completes, STEP 05 regenerates its exact shared test covariance
 matrices, fits OpenMx, and draws paired lines for OpenMx, NPE-100k, NPE-200k,
 NPE-300k, and NPE-500k. No NPE is retrained or loaded. Submit it on Alpine:
 
 ```bash
-sbatch ace_npe/08b_compare_training_sizes_openmx.sh
+sbatch ace_npe/05_compare_training_sizes_openmx.sh
 ```
 
 Its tables and bias, MAE, RMSE, uncertainty, and coverage figures are written
@@ -130,7 +112,7 @@ uses each OpenMx estimate's SE and each NPE posterior's SD, rather than a
 common SD. The underlying counts and proportions are saved in
 `uncertainty_exceedance_counts.csv`.
 
-STEP 09 is the compact first-pass diagnostic suite. It trains one transient
+STEP 06 is the compact first-pass diagnostic suite. It trains one transient
 model for every combination of `K = 100k, 300k, 500k` and
 `N = 50, 100, 500, 1000, 2000, 5000, 20000`, then evaluates `M = 1000`
 shared test datasets with `L = 2000` posterior draws. Separate figures are
@@ -138,40 +120,40 @@ created for each N: SBC calibration ECDF, posterior-mean recovery, and
 posterior z-score versus contraction. NRMSE and R-squared are plotted over N.
 Models and full posterior draws remain in memory and are discarded; only
 compact results, metrics, runtimes, configuration, and figures are retained in
-`results/step09_npe_diagnostics/`.
+`results/step06_npe_diagnostics/`.
 
 On CU Boulder Alpine, submit the 21-cell array and dependent aggregation job:
 
 ```bash
-diagnostic_job=$(sbatch --parsable ace_npe/09_npe_diagnostics.sh)
+diagnostic_job=$(sbatch --parsable ace_npe/06_npe_diagnostics.sh)
 
 sbatch --dependency=afterok:"$diagnostic_job" \
-  ace_npe/09_aggregate_npe_diagnostics.sh
+  ace_npe/06_aggregate_npe_diagnostics.sh
 ```
 
-STEP 10 defaults to models in
+STEP 07 defaults to models in
 `results/models/prior_comparison_100k_N20000/dirichlet/`. Each fixed-N model
 uses a 100,000-row simulation corpus split into 70,000 training, 15,000
-validation, and 15,000 held-out rows. STEP 10 creates a separate set of 500
+validation, and 15,000 held-out rows. STEP 07 creates a separate set of 500
 fixed-theta evaluation datasets and does not retrain the models.
 
-STEP 10b is now evaluation-only: it reloads the 100 completed models from
+STEP 08 is evaluation-only: it reloads the 100 completed models from
 `results/fixed_theta_npe_ensemble/` and evaluates 500 shared datasets without
-retraining. Submit its evaluation array, aggregation job, and STEP 11 with
+retraining. Submit its evaluation array, aggregation job, and Steps 09–10 with
 dependencies:
 
 ```bash
 eval_job=$(sbatch --parsable \
-  ace_npe/10b_fixed_theta_npe_ensemble.sh)
+  ace_npe/08_fixed_theta_npe_ensemble.sh)
 
 aggregate_job=$(sbatch --parsable --dependency=afterok:"$eval_job" \
-  ace_npe/10b_aggregate_fixed_theta_npe_ensemble.sh)
+  ace_npe/08_aggregate_fixed_theta_npe_ensemble.sh)
 
 sbatch --dependency=afterok:"$aggregate_job" \
-  ace_npe/10c_decompose_fixed_theta_variance.sh
+  ace_npe/09_decompose_fixed_theta_variance.sh
 
 sbatch --dependency=afterok:"$aggregate_job" \
-  ace_npe/11_compare_fixed_theta_npe_grid.sh
+  ace_npe/10_compare_fixed_theta_npe_grid.sh
 ```
 
 The trained models remain in `results/fixed_theta_npe_ensemble/`. New
@@ -180,13 +162,13 @@ evaluation, uncertainty-comparison, and grid-comparison outputs are written to
 `results/fixed_theta_variance_decomposition/`, and
 `results/fixed_theta_npe_grid_comparison/`, respectively.
 
-STEP 10c writes parallel variance-scale and SE-scale (`sqrt(variance)`) bar,
+STEP 09 writes parallel variance-scale and SE-scale (`sqrt(variance)`) bar,
 box, and block-point figures. Its plotted sources are Total, Model, Dataset,
 and Posterior uncertainty. Total has one estimate per block; every other source
 has 100 estimates per block. These quantities are compared, not added.
 
-`demo_single_fit.ipynb` is a standalone illustration of fitting one dataset;
-it is not a pipeline step.
+`archive_demo_single_fit.ipynb` is a legacy standalone illustration of fitting
+one dataset; it is retained for reference and is not an active pipeline step.
 
 ### Optional multi-prior comparison
 
@@ -229,7 +211,7 @@ are not retained.
 
 ### Paired Dirichlet OpenMx--NPE comparison
 
-STEP 08 uses only `Dirichlet(1,1,1)` ACE parameters. For every condition and
+STEP 04 uses only `Dirichlet(1,1,1)` ACE parameters. For every condition and
 sample size, it simulates one MZ and one DZ covariance matrix, fits OpenMx to
 those matrices, and evaluates the matching fixed-N NPE on their standard
 four-feature reduction. Both estimators' metrics use the same rows on which
@@ -243,7 +225,7 @@ python prior_compare/03_train_prior_models.py --schemes dirichlet --n_pairs 2000
 
 # 200 shared conditions at N=50,100,500,1000,2000,5000,20000
 # -> results/dirichlet_openmx_comparison/
-python 08_compare_fixed_n_dirichlet_openmx.py
+python 04_compare_fixed_n_dirichlet_openmx.py
 ```
 
 Use `--reuse_data` to preserve the paired simulated data on a repeat run and
@@ -259,29 +241,31 @@ ace_npe/
 ├── ace_model.py                      shared library — imported by everything
 ├── 01_generate_training_data.py      simulate (θ, x) training pairs
 ├── 02_train_npe.py                   train the normalizing flow
-├── 03_evaluate_oos_predictions.py    calibration / coverage on fresh draws
-├── 03b_training_budget_grid.py       transient K × N training-set-size study
-├── 03b_training_budget_grid.sh       Alpine 49-cell array for STEP 03b
-├── 03b_aggregate_training_budget_grid.sh  aggregate/plot STEP 03b
-├── 04_fit_openmx_reference.R         OpenMx MLE reference + test conditions
-├── 05_simulate_posterior_recovery.py NPE fits on those same conditions
-├── 06_analysis.ipynb                 OpenMx vs NPE comparison
-├── 07_se_calibration.ipynb           is the reported SE correct?
-├── 08_compare_fixed_n_dirichlet_openmx.py  paired fixed-N comparison
-├── 08_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 08
-├── 08b_compare_training_sizes_openmx.py  OpenMx vs four STEP 03b NPE sizes
-├── 08b_compare_training_sizes_openmx.sh  Alpine submission for STEP 08b
-├── 09_npe_diagnostics.py            SBC, recovery, and contraction diagnostics
-├── 09_npe_diagnostics.sh            Alpine 21-cell array for STEP 09
-├── 09_aggregate_npe_diagnostics.sh  aggregate and plot STEP 09
+├── 03_training_budget_grid.py        transient K × N training-set-size study
+├── 03_training_budget_grid.sh        Alpine 49-cell array for STEP 03
+├── 03_aggregate_training_budget_grid.sh  aggregate/plot STEP 03
+├── 04_compare_fixed_n_dirichlet_openmx.py  paired fixed-N comparison
+├── 04_fit_openmx_paired_dirichlet.R  OpenMx backend called by STEP 04
+├── 05_compare_training_sizes_openmx.py  OpenMx vs four STEP 03 NPE sizes
+├── 05_compare_training_sizes_openmx.sh  Alpine submission for STEP 05
+├── 06_npe_diagnostics.py            SBC, recovery, and contraction diagnostics
+├── 06_npe_diagnostics.sh            Alpine 21-cell array for STEP 06
+├── 06_aggregate_npe_diagnostics.sh  aggregate and plot STEP 06
 ├── training_budget_utils.py         shared fixed-N transient NPE utilities
-├── 10_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
-├── 10b_fixed_theta_npe_ensemble.py   reevaluate 100 saved NPEs at N=1000
-├── 10c_decompose_fixed_theta_variance.py  fixed-theta uncertainty comparison
-├── 10c_decompose_fixed_theta_variance.sh  Alpine submission script for STEP 10c
-├── 11_compare_fixed_theta_npe_grid.R paired NPE vs grid-posterior diagnostics
-├── 11_compare_fixed_theta_npe_grid.sh Alpine submission script for STEP 11
-├── demo_single_fit.ipynb             worked single-observation example
+├── 07_evaluate_fixed_theta.py        fixed-theta evaluation across fixed N
+├── 08_fixed_theta_npe_ensemble.py    reevaluate 100 saved NPEs at N=1000
+├── 08_fixed_theta_npe_ensemble.sh    Alpine evaluation array for STEP 08
+├── 08_aggregate_fixed_theta_npe_ensemble.sh  aggregate STEP 08
+├── 09_decompose_fixed_theta_variance.py  fixed-theta uncertainty comparison
+├── 09_decompose_fixed_theta_variance.sh  Alpine submission for STEP 09
+├── 10_compare_fixed_theta_npe_grid.R paired NPE vs grid-posterior diagnostics
+├── 10_compare_fixed_theta_npe_grid.sh Alpine submission for STEP 10
+├── archive_03_evaluate_oos_predictions.py  legacy OOS calibration
+├── archive_04_fit_openmx_reference.R legacy OpenMx reference
+├── archive_05_simulate_posterior_recovery.py  legacy NPE recovery
+├── archive_06_analysis.ipynb         legacy OpenMx/NPE analysis
+├── archive_07_se_calibration.ipynb   legacy SE-calibration analysis
+├── archive_demo_single_fit.ipynb     legacy single-observation demo
 ├── prior_compare/                    isolated optional multi-prior pipeline
 │   ├── 01_generate_prior_data.py
 │   ├── 02_validate_dirichlet_prior.py
@@ -293,11 +277,11 @@ ace_npe/
 │   └── ace_test_conditions.csv
 └── results/                          everything generated
     ├── models/<run>/                 posterior.pkl, config.json, scaler, metrics
-    ├── simulations/                  OpenMx + NPE recovery results
-    ├── analysis/                     STEP 06 figures and summary tables
-    ├── se_calibration/               STEP 07 SE-calibration figures + tables
-    ├── oos/<run>/                    STEP 03 calibration output
-    ├── step09_npe_diagnostics/       STEP 09 tables, configuration, and figures
+    ├── simulations/                  archived OpenMx + NPE recovery results
+    ├── analysis/                     archived STEP 06 figures and tables
+    ├── se_calibration/               archived STEP 07 figures and tables
+    ├── oos/<run>/                    archived STEP 03 calibration output
+    ├── step06_npe_diagnostics/       STEP 06 tables, configuration, and figures
     └── demo/                         demo notebook figures
 ```
 
@@ -342,7 +326,7 @@ A = 2(c_{MZ}-c_{DZ}), \qquad C = 2c_{DZ}-c_{MZ}, \qquad E = v - c_{MZ}
 $$
 
 where $v$ is the phenotypic variance and $c_z$ the within-pair covariance.
-`04_fit_openmx_reference.R` uses exactly these expressions as its
+`archive_04_fit_openmx_reference.R` uses exactly these expressions as its
 method-of-moments starting values.
 
 Both estimators are given the same data-generating process, implemented in
@@ -452,7 +436,7 @@ choice:
   *difference* $c_{MZ} - c_{DZ}$. When that difference is noisy — small $N$ —
   the posterior collapses onto a long diagonal ridge trading $A$ against $C$.
   A diagonal-Gaussian estimator cannot represent that ridge at all; the joint
-  plots in `demo_single_fit.ipynb` show it directly.
+  plots in `archive_demo_single_fit.ipynb` show it directly.
 - **It is skewed and boundary-constrained.** True values live on the simplex
   near $A, C, E \ge 0$. Posteriors for a component near zero pile up against
   the boundary and are sharply asymmetric — badly modelled by anything
@@ -601,7 +585,11 @@ job for the network.
 
 ---
 
-## Part 4 — The pipeline, step by step
+## Part 4 — Archived legacy workflow, step by step
+
+This section documents the original coworker workflow for reproducibility.
+Files unique to that workflow now carry an `archive_` prefix and are not part
+of the active quick start.
 
 **`01_generate_training_data.py`** — draws $(A,C,E)$ from
 $V\,\mathrm{Dirichlet}(\alpha)$, picks $N$, simulates twin pairs, reduces each 2×2 sample
@@ -616,12 +604,12 @@ evaluates on the held-out test split with posterior mean, MAP and posterior SD.
 → `results/models/<run>/` containing `posterior.pkl`, `config.json`,
 `feature_scaler.pkl`, `density_estimator.pt`, `test_metrics.json`, plots.
 
-**`03_evaluate_oos_predictions.py`** — the calibration check. Draws fresh
+**`archive_03_evaluate_oos_predictions.py`** — the calibration check. Draws fresh
 samples with a *different seed* from training and reports what training-time
 metrics cannot: 95 % credible-interval coverage (should be ≈ 0.95), bias
 relative to SD, and MAP against posterior mean. → `results/oos/<run>/`
 
-**`04_fit_openmx_reference.R`** — draws 200 conditions from a symmetric
+**`archive_04_fit_openmx_reference.R`** — draws 200 conditions from a symmetric
 Dirichlet(1,1,1) so $A+C+E=1$ exactly, then for each condition × sample size
 (50 → 20 000) simulates twin data and fits the ACE model in OpenMx using
 covariance-matrix input, in the variance-component parameterisation with
@@ -629,7 +617,7 @@ $V_A, V_C \ge 0$ and $V_E \ge 10^{-6}$. Standardized SEs come from the delta
 method applied to the parameter covariance matrix from the Hessian.
 → `data/ace_test_conditions.csv`, `results/simulations/ace_simulation_results.csv`
 
-**`05_simulate_posterior_recovery.py`** — replays *the same* conditions through
+**`archive_05_simulate_posterior_recovery.py`** — replays *the same* conditions through
 the NPE, applying `summarize_cov` exactly as STEP 01 did so training and
 inference features match. Feature construction otherwise adapts automatically
 to whichever $N$ encoding the loaded run used, so one script serves both the
@@ -637,13 +625,13 @@ to whichever $N$ encoding the loaded run used, so one script serves both the
 posterior SD (↔ SE) and MAP.
 → `results/simulations/npe_simulation_results*.csv`
 
-**`06_analysis.ipynb`** — aggregates both estimators by sample size and
+**`archive_06_analysis.ipynb`** — aggregates both estimators by sample size and
 compares **RMSE around truth**, mean reported SE, and bias with 95 % CI
 ribbons. Every figure and table is written through the `save_fig` / `save_table`
 helpers. → `results/analysis/` (5 figures + 11 tables, including a tidy
 long-format `summary_long.csv`)
 
-**`07_se_calibration.ipynb`** — checks whether the reported SE is *correct*.
+**`archive_07_se_calibration.ipynb`** — checks whether the reported SE is *correct*.
 STEP 05 with `--n_reps 200 --n_conditions 24` replicates each condition 200
 times at fixed true parameters, so the **spread of the estimates across
 replicates is the true sampling SE**. Comparing that against the mean reported
@@ -783,7 +771,7 @@ averaged over a representative sample of $\theta$ drawn like the prior** —
 which is exactly what pooling `ratio_rmse` over many conditions approximates,
 and why it is the fairer target: 1.06–1.21 in-range, versus `ratio_se`'s 1.3.
 
-The formal pipeline and `04_fit_openmx_reference.R` now share the default
+The formal pipeline and `archive_04_fit_openmx_reference.R` share the default
 Dirichlet(1,1,1) distribution with $A+C+E=1$, so this former prior mismatch no
 longer applies after retraining the formal NPE models.
 
@@ -1013,7 +1001,7 @@ CPU.
 
 ---
 
-## Part 8 — Reproducing from scratch
+## Part 8 — Reproducing the archived workflow
 
 This is also the sequence to run after the sufficient-variance fix (Part 7).
 STEP 04 is the slow step and can be **skipped** if
@@ -1031,22 +1019,22 @@ python 02_train_npe.py --data ace_training_data.csv --include_n_pairs \
 python 02_train_npe.py --data ace_training_data_N20000.csv --epochs 500 \
                        --device cpu --output no_n_pairs_dirichlet
 
-python 03_evaluate_oos_predictions.py --model_dir se_proxy
+python archive_03_evaluate_oos_predictions.py --model_dir se_proxy
 
-Rscript 04_fit_openmx_reference.R          # slowest step: 1400 OpenMx fits
+Rscript archive_04_fit_openmx_reference.R  # slowest step: 1400 OpenMx fits
                                            # skip if its output already exists
 
-python 05_simulate_posterior_recovery.py --model_dir se_proxy \
+python archive_05_simulate_posterior_recovery.py --model_dir se_proxy \
        --output npe_simulation_results.csv
-python 05_simulate_posterior_recovery.py --model_dir no_n_pairs_dirichlet \
+python archive_05_simulate_posterior_recovery.py --model_dir no_n_pairs_dirichlet \
        --output npe_simulation_results_no_n.csv
 
-jupyter lab 06_analysis.ipynb
+jupyter lab archive_06_analysis.ipynb
 
 # STEP 07: Monte-Carlo SE calibration (~18 min for 16,800 fits)
-python 05_simulate_posterior_recovery.py --model_dir se_proxy \
+python archive_05_simulate_posterior_recovery.py --model_dir se_proxy \
        --n_conditions 24 --n_reps 200 --output npe_se_montecarlo.csv
-jupyter lab 07_se_calibration.ipynb
+jupyter lab archive_07_se_calibration.ipynb
 ```
 
 **Dependencies:** Python — `sbi`, `torch`, `scikit-learn`, `pandas`, `numpy`,

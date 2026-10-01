@@ -1,8 +1,8 @@
 #!/bin/bash
-# Aggregate STEP 09 cells, create figures, and remove temporary cell files.
-# Submit with an afterok dependency on the STEP 09 array.
+# Aggregate STEP 03 cells, make figures, and remove temporary cell files.
+# Submit with afterok dependency on the STEP 03 array.
 
-#SBATCH --job-name=ace09-plot
+#SBATCH --job-name=ace03-plot
 #SBATCH --partition=acpu
 #SBATCH --qos=cpu-normal
 #SBATCH --nodes=1
@@ -10,8 +10,8 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
 #SBATCH --time=01:00:00
-#SBATCH --output=ace09-plot-%j.out
-#SBATCH --error=ace09-plot-%j.err
+#SBATCH --output=ace03-plot-%j.out
+#SBATCH --error=ace03-plot-%j.err
 
 set -euo pipefail
 
@@ -24,4 +24,4 @@ python --version
 python devtools/check_environment.py
 export MPLBACKEND=Agg
 
-python -u ace_npe/09_npe_diagnostics.py --aggregate --device cpu
+python -u ace_npe/03_training_budget_grid.py --aggregate --device cpu

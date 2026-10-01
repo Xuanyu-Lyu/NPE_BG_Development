@@ -1,11 +1,11 @@
-"""STEP 08 -- paired OpenMx versus fixed-N Dirichlet NPE comparison.
+"""STEP 04 -- paired OpenMx versus fixed-N Dirichlet NPE comparison.
 
 For each Dirichlet ACE condition and sample size, this script simulates one MZ
 and one DZ covariance matrix. OpenMx and the matching fixed-N NPE receive those
 exact same covariance matrices. Metrics for both methods use the same subset of
 rows on which OpenMx converged, so differences are genuinely paired.
 
-The script calls ``08_fit_openmx_paired_dirichlet.R`` as its OpenMx backend.
+The script calls ``04_fit_openmx_paired_dirichlet.R`` as its OpenMx backend.
 """
 
 from __future__ import annotations
@@ -1255,7 +1255,7 @@ def main() -> None:
     parser.add_argument("--rscript", default="Rscript")
     parser.add_argument(
         "--openmx_backend",
-        default=str(Path(__file__).with_name("08_fit_openmx_paired_dirichlet.R")),
+        default=str(Path(__file__).with_name("04_fit_openmx_paired_dirichlet.R")),
     )
     parser.add_argument(
         "--reuse_data", action="store_true",

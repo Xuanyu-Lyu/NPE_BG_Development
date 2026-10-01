@@ -1,4 +1,4 @@
-"""STEP 10b -- reevaluate the saved fixed-N NPE ensemble.
+"""STEP 08 -- reevaluate the saved fixed-N NPE ensemble.
 
 The 100 independently trained Dirichlet NPEs already exist in the model
 directory. Every model was trained from 100,000 simulations at N=1,000. This
@@ -8,12 +8,12 @@ script reloads them and evaluates 500 shared datasets generated at
 This file is designed for a Slurm array. One array task reloads and evaluates
 one existing model without training or modifying it::
 
-    python 10b_fixed_theta_npe_ensemble.py evaluate-one --replicate 1
+    python 08_fixed_theta_npe_ensemble.py evaluate-one --replicate 1
 
 After all array tasks finish, aggregate their summaries and make model-level
 calibration plots plus dataset-level between-NPE uncertainty plots::
 
-    python 10b_fixed_theta_npe_ensemble.py aggregate
+    python 08_fixed_theta_npe_ensemble.py aggregate
 
 Test covariance statistics are simulated directly from their exact Wishart
 distribution. This is distributionally identical to generating all individual
@@ -190,11 +190,11 @@ def evaluate_posterior(
 
 
 def validate_saved_model(loaded: dict, replicate: int, args) -> dict:
-    """Check that a saved STEP 10b model matches the requested evaluation."""
+    """Check that a saved STEP 08 model matches the requested evaluation."""
     config = loaded["config"]
     if config.get("model_type") != "NPE_fixed_theta_ensemble":
         raise ValueError(
-            f"Replicate {replicate}: source is not a STEP 10b ensemble model"
+            f"Replicate {replicate}: source is not a STEP 08 ensemble model"
         )
     if int(config.get("replicate", -1)) != replicate:
         raise ValueError(
@@ -766,7 +766,7 @@ def aggregate(args) -> None:
                 atol=1e-10,
             ):
                 raise ValueError(
-                    "Dataset-level B_j/W_j requires the shared STEP 10b test "
+                    "Dataset-level B_j/W_j requires the shared STEP 08 test "
                     f"set, but replicate {replicate} contains different data"
                 )
 

@@ -1,8 +1,8 @@
 #!/bin/bash
-# Compare OpenMx with NPE-100k/200k/300k/500k on STEP 03b test datasets.
-# Submit after the STEP 03b aggregation job has completed successfully.
+# Compare OpenMx with NPE-100k/200k/300k/500k on STEP 03 test datasets.
+# Submit after the STEP 03 aggregation job has completed successfully.
 
-#SBATCH --job-name=ace08b-openmx
+#SBATCH --job-name=ace05-openmx
 #SBATCH --partition=acpu
 #SBATCH --qos=cpu-normal
 #SBATCH --nodes=1
@@ -10,8 +10,8 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
 #SBATCH --time=12:00:00
-#SBATCH --output=ace08b-openmx-%j.out
-#SBATCH --error=ace08b-openmx-%j.err
+#SBATCH --output=ace05-openmx-%j.out
+#SBATCH --error=ace05-openmx-%j.err
 
 set -euo pipefail
 
@@ -25,4 +25,4 @@ python devtools/check_environment.py
 Rscript --version
 export MPLBACKEND=Agg
 
-python -u ace_npe/08b_compare_training_sizes_openmx.py
+python -u ace_npe/05_compare_training_sizes_openmx.py

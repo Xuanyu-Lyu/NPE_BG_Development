@@ -1,8 +1,8 @@
 #!/usr/bin/env Rscript
 
-# STEP 11 -- compare the fixed-theta NPE ensemble with a grid posterior.
+# STEP 10 -- compare the fixed-theta NPE ensemble with a grid posterior.
 #
-# This script consumes the completed STEP 10b replicate directories. It does
+# This script consumes the completed STEP 08 replicate directories. It does
 # not train an NPE and does not simulate new test data. For every shared test
 # dataset, it evaluates the Gaussian ACE likelihood on a fine (A, C, E)
 # simplex grid under the same Dirichlet prior used for NPE training.
@@ -54,10 +54,10 @@ defaults <- list(
 
 print_help <- function() {
   cat(paste0(
-    "Usage: Rscript ace_npe/11_compare_fixed_theta_npe_grid.R [options]\n\n",
+    "Usage: Rscript ace_npe/10_compare_fixed_theta_npe_grid.R [options]\n\n",
     "Options:\n",
-    "  --ensemble_dir PATH       STEP 10b output directory\n",
-    "  --output_dir PATH         Directory for STEP 11 outputs\n",
+    "  --ensemble_dir PATH       STEP 08 output directory\n",
+    "  --output_dir PATH         Directory for STEP 10 outputs\n",
     "  --n_replicates N          Number of NPE replicates (default: 100)\n",
     "  --n_pairs N               MZ and DZ pairs per dataset (default: 1000)\n",
     "  --grid_step H             Simplex grid spacing (default: 0.001)\n",
@@ -193,7 +193,7 @@ for (replicate_index in seq_len(args$n_replicates)) {
     )
     if (any(!is.finite(differences)) || max(differences) > 1e-10) {
       stop(
-        "STEP 11 requires the shared STEP 10b test set, but replicate ",
+        "STEP 10 requires the shared STEP 08 test set, but replicate ",
         replicate_index, " contains different test data.", call. = FALSE
       )
     }
@@ -622,7 +622,7 @@ par(old_par)
 dev.off()
 
 summary_text <- c(
-  "STEP 11 fixed-theta NPE versus grid posterior comparison",
+  "STEP 10 fixed-theta NPE versus grid posterior comparison",
   sprintf("Generated: %s", format(Sys.time(), tz = "UTC", usetz = TRUE)),
   sprintf("Ensemble directory: %s", normalizePath(args$ensemble_dir)),
   sprintf("NPE replicates: %d", args$n_replicates),
@@ -646,7 +646,7 @@ summary_text <- c(
 )
 writeLines(summary_text, file.path(args$output_dir, "run_summary.txt"))
 
-cat("\nSTEP 11 complete.\n")
+cat("\nSTEP 10 complete.\n")
 cat("Grid results:       ", grid_path, "\n", sep = "")
 cat("Resolution check:    ", resolution_path, "\n", sep = "")
 cat("Paired results:     ", paired_path, "\n", sep = "")

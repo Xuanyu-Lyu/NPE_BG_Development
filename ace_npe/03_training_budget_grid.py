@@ -1,4 +1,4 @@
-"""STEP 03b -- NPE training-set-size study across fixed twin-pair sample sizes.
+"""STEP 03 -- NPE training-set-size study across fixed twin-pair sample sizes.
 
 For each cell in a K x N grid, this script:
 
