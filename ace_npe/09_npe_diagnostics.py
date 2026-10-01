@@ -366,6 +366,25 @@ def save_z_score_contraction(
             axis.axhline(2.0, color="0.4", linestyle="--", linewidth=0.8)
             axis.axhline(-2.0, color="0.4", linestyle="--", linewidth=0.8)
             axis.axvline(0.0, color="0.6", linestyle=":", linewidth=0.8)
+            z_scores = subset["posterior_z_score"].to_numpy(dtype=float)
+            z_scores = z_scores[np.isfinite(z_scores)]
+            n_above_two = int(np.sum(z_scores > 2.0))
+            n_below_minus_two = int(np.sum(z_scores < -2.0))
+            axis.text(
+                0.03,
+                0.97,
+                f"z > 2: {n_above_two}\nz < -2: {n_below_minus_two}",
+                transform=axis.transAxes,
+                ha="left",
+                va="top",
+                fontsize=9,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "0.75",
+                    "alpha": 0.85,
+                    "boxstyle": "round,pad=0.25",
+                },
+            )
             axis.set_xlim(
                 left=min(-0.1, float(subset["posterior_contraction"].min())),
                 right=1.05,
