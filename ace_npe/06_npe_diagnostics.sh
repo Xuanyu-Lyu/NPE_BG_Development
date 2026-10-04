@@ -1,5 +1,6 @@
 #!/bin/bash
 # Train and diagnose one transient (K,N) NPE per Alpine array task.
+# Marginal SBC plus covariance-prediction RMSE SBC on the same posterior draws.
 # Submit from the repository root with: sbatch ace_npe/06_npe_diagnostics.sh
 
 #SBATCH --job-name=ace06-diag
@@ -31,4 +32,9 @@ export MPLBACKEND=Agg
 
 python -u ace_npe/06_npe_diagnostics.py \
   --cell-index "${SLURM_ARRAY_TASK_ID}" \
+  --k-values 100000 300000 500000 \
+  --n-values 50 100 500 1000 2000 5000 20000 \
+  --n-test-datasets 1000 \
+  --n-posterior-draws 2000 \
+  --output-dir step06_npe_diagnostics_rmse \
   --device cpu

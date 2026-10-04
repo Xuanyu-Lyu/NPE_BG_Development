@@ -7,6 +7,7 @@ and diagnostic results differ only in the requested K grid and output plots.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -175,8 +176,15 @@ def evaluate_cell(
     n_pairs: int,
     n_draws: int,
     posterior_seed: int,
+    *,
+    draw_callback: Callable[[int, np.ndarray], None] | None = None,
 ) -> pd.DataFrame:
-    """Create one compact row per test dataset and ACE parameter."""
+    """Create one compact row per test dataset and ACE parameter.
+
+    An optional callback receives the one-based dataset index and the same
+    joint draws used for marginal summaries. It must not mutate the draws or
+    change the global RNG state.
+    """
     torch.manual_seed(posterior_seed)
     scaled = scaler.transform(test_features).astype(np.float32)
     rows: list[dict[str, float | int | str]] = []
@@ -188,6 +196,8 @@ def evaluate_cell(
             draws = posterior.sample(
                 (n_draws,), x=x, show_progress_bars=False
             ).cpu().numpy()
+        if draw_callback is not None:
+            draw_callback(test_index, draws)
         for parameter_index, parameter in enumerate(ACE_PARAM_NAMES):
             values = draws[:, parameter_index]
             truth = float(truth_row[parameter_index])

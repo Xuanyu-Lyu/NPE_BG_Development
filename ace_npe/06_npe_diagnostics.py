@@ -13,7 +13,10 @@ M = 1,000 shared test datasets per N
 L = 2,000 posterior draws per test dataset
 
 For each N, aggregation creates separate 3 x 3 figures (ACE parameters by K)
-for SBC calibration ECDFs, recovery, and z-score versus contraction.  NRMSE
+for marginal SBC calibration ECDFs, recovery, and z-score versus contraction.
+An additional covariance-prediction RMSE SBC figure compares the K values for
+each N, using the same joint posterior draws and original covariance features.
+NRMSE
 and R-squared are summarized as line plots over N.  Only compact diagnostic
 tables and figures are retained; neither fitted models nor posterior draws are
 serialized.
@@ -36,7 +39,8 @@ import torch
 from scipy.stats import binom
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ace_model import ACE_PARAM_NAMES, RESULTS_DIR, resolve
+from ace_model import ACE_PARAM_NAMES, COV_FEATURE_NAMES, RESULTS_DIR, resolve
+from rmse_sbc import RMSE_SBC_DEFINITION, summarize_rmse_sbc
 from training_budget_utils import (
     evaluate_cell,
     resolve_device,
@@ -48,7 +52,7 @@ from training_budget_utils import (
 
 DEFAULT_K_VALUES = (100_000, 300_000, 500_000)
 DEFAULT_N_VALUES = (50, 100, 500, 1_000, 2_000, 5_000, 20_000)
-DEFAULT_OUTPUT_DIR = "step06_npe_diagnostics"
+DEFAULT_OUTPUT_DIR = "step06_npe_diagnostics_rmse"
 PRIOR_VARIANCE = 1.0 / 18.0  # Marginal variance under Dirichlet(1, 1, 1).
 PRIOR_RANGE = 1.0
 ECDF_REFERENCE_PROBABILITY = 0.95
@@ -90,6 +94,82 @@ def cell_stem(k_value: int, n_value: int) -> str:
     return f"K{k_value}_N{n_value}"
 
 
+def training_settings(args: argparse.Namespace) -> dict:
+    return {
+        name: getattr(args, name)
+        for name in (
+            "validation_fraction", "epochs", "stop_after_epochs", "batch_size",
+            "learning_rate", "flow_type", "flow_hidden", "flow_transforms",
+        )
+    }
+
+
+def expected_cell_metadata(k_value: int, n_value: int, args: argparse.Namespace) -> dict:
+    return {
+        "K": k_value,
+        "N": n_value,
+        "H": 1,
+        "M": args.n_test_datasets,
+        "L": args.n_posterior_draws,
+        "training_seed": args.training_seed,
+        "simulation_seed": seed_from(args.seed, n_value, 10),
+        "test_seed": seed_from(args.seed, n_value, 20),
+        "posterior_seed": seed_from(args.seed, k_value, n_value, 30),
+        "rmse_tie_seed": seed_from(args.seed, k_value, n_value, 40),
+        "rmse_sbc": RMSE_SBC_DEFINITION,
+        "training": training_settings(args),
+    }
+
+
+def validate_cell_metadata(metadata: dict, expected: dict, path: Path) -> None:
+    mismatches = {
+        key: (metadata.get(key), value)
+        for key, value in expected.items()
+        if metadata.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(
+            f"{path} is incompatible with this run: {mismatches}. "
+            "Use a fresh --output-dir or rerun the cell with --overwrite."
+        )
+
+
+def validate_rmse_results(
+    frame: pd.DataFrame, k_value: int, n_value: int, n_tests: int, n_draws: int
+) -> None:
+    required = {
+        "K", "N", "test_dataset_m", "true_rmse", "posterior_rmse_mean",
+        "posterior_rmse_sd", "rank_strict", "rank_ties", "true_rank",
+        "true_rank_percentile", "n_posterior_draws",
+    }
+    if required.difference(frame.columns):
+        raise ValueError(f"RMSE SBC is missing columns: {sorted(required - set(frame.columns))}")
+    if len(frame) != n_tests or set(frame["test_dataset_m"]) != set(range(1, n_tests + 1)):
+        raise ValueError(f"RMSE SBC K={k_value}, N={n_value} needs one row per dataset")
+    if not (
+        (frame["K"] == k_value).all()
+        and (frame["N"] == n_value).all()
+        and (frame["n_posterior_draws"] == n_draws).all()
+    ):
+        raise ValueError("RMSE SBC cell settings do not match the requested run")
+    numeric = frame[list(required - {"K", "N", "test_dataset_m"})].to_numpy(dtype=float)
+    if not np.isfinite(numeric).all():
+        raise ValueError("RMSE SBC contains non-finite values")
+    ranks = frame["true_rank"].to_numpy(dtype=float)
+    strict = frame["rank_strict"].to_numpy(dtype=float)
+    ties = frame["rank_ties"].to_numpy(dtype=float)
+    if (
+        np.any(ranks != np.floor(ranks))
+        or np.any(strict != np.floor(strict))
+        or np.any(ties != np.floor(ties))
+        or np.any(strict < 0) or np.any(ties < 0)
+        or np.any(strict + ties > n_draws)
+        or np.any(ranks < strict) or np.any(ranks > strict + ties)
+        or not np.allclose(frame["true_rank_percentile"], ranks / n_draws)
+    ):
+        raise ValueError("Invalid RMSE SBC ranks or tie counts")
+
+
 def run_cell(
     k_value: int,
     n_value: int,
@@ -101,8 +181,16 @@ def run_cell(
     cells_dir.mkdir(parents=True, exist_ok=True)
     stem = cell_stem(k_value, n_value)
     results_path = cells_dir / f"{stem}.csv"
+    rmse_path = cells_dir / f"{stem}_rmse_sbc.csv"
     metadata_path = cells_dir / f"{stem}.json"
-    if results_path.exists() and metadata_path.exists() and not args.overwrite:
+    expected_metadata = expected_cell_metadata(k_value, n_value, args)
+    if results_path.exists() and metadata_path.exists() and rmse_path.exists() and not args.overwrite:
+        with metadata_path.open() as handle:
+            validate_cell_metadata(json.load(handle), expected_metadata, metadata_path)
+        validate_rmse_results(
+            pd.read_csv(rmse_path), k_value, n_value,
+            args.n_test_datasets, args.n_posterior_draws,
+        )
         print(f"Skipping completed diagnostic cell K={k_value:,}, N={n_value:,}")
         return
 
@@ -120,6 +208,22 @@ def run_cell(
         args.n_test_datasets, n_value, test_seed
     )
     posterior_seed = seed_from(args.seed, k_value, n_value, 30)
+    rmse_tie_rng = np.random.default_rng(expected_metadata["rmse_tie_seed"])
+    rmse_rows = []
+
+    def collect_rmse(test_index: int, draws: np.ndarray) -> None:
+        observed = test_features[test_index - 1]
+        truth = test_ace[test_index - 1]
+        rmse_rows.append({
+            "K": k_value,
+            "N": n_value,
+            "model_index_h": 1,
+            "test_dataset_m": test_index,
+            **dict(zip(COV_FEATURE_NAMES, map(float, observed))),
+            **dict(zip((f"true_{name}" for name in ACE_PARAM_NAMES), map(float, truth))),
+            **summarize_rmse_sbc(draws, truth, observed, rmse_tie_rng),
+        })
+
     results = evaluate_cell(
         posterior,
         scaler,
@@ -129,6 +233,11 @@ def run_cell(
         n_value,
         args.n_posterior_draws,
         posterior_seed,
+        draw_callback=collect_rmse,
+    )
+    rmse_results = pd.DataFrame(rmse_rows)
+    validate_rmse_results(
+        rmse_results, k_value, n_value, args.n_test_datasets, args.n_posterior_draws
     )
     results["posterior_z_score"] = np.divide(
         results["posterior_mean"] - results["truth"],
@@ -142,15 +251,7 @@ def run_cell(
 
     elapsed_seconds = time.perf_counter() - started
     metadata = {
-        "K": k_value,
-        "N": n_value,
-        "H": 1,
-        "M": args.n_test_datasets,
-        "L": args.n_posterior_draws,
-        "training_seed": args.training_seed,
-        "simulation_seed": training_seed,
-        "test_seed": test_seed,
-        "posterior_seed": posterior_seed,
+        **expected_metadata,
         "prior": "Dirichlet(1, 1, 1)",
         "prior_marginal_variance": PRIOR_VARIANCE,
         "elapsed_seconds": elapsed_seconds,
@@ -159,6 +260,7 @@ def run_cell(
         "posterior_draws_saved": False,
     }
     write_csv_atomic(results, results_path)
+    write_csv_atomic(rmse_results, rmse_path)
     write_json_atomic(metadata, metadata_path)
     print(
         f"Completed K={k_value:,}, N={n_value:,} in "
@@ -166,7 +268,7 @@ def run_cell(
     )
 
     # Fitted model and full draws are deliberately never serialized.
-    del posterior, scaler, features, ace, test_features, test_ace, results
+    del posterior, scaler, features, ace, test_features, test_ace, results, rmse_results, rmse_rows
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -260,17 +362,21 @@ def save_calibration_ecdf(
     k_values: tuple[int, ...],
     n_draws: int,
     path: Path,
+    *,
+    variable_names: tuple[str, ...] = tuple(ACE_PARAM_NAMES),
+    title: str = "SBC calibration ECDF",
 ) -> None:
     """Plot SBC rank ECDF-minus-uniform with a tapered simultaneous band."""
     fig, axes = plt.subplots(
-        len(ACE_PARAM_NAMES), len(k_values), figsize=(13.5, 11.0), squeeze=False
+        len(variable_names), len(k_values),
+        figsize=(13.5, 11.0 if len(variable_names) == 3 else 4.5), squeeze=False
     )
     fig.suptitle(
-        f"SBC calibration ECDF (N={n_value:,}; L={n_draws:,})", fontsize=15
+        f"{title} (N={n_value:,}; L={n_draws:,})", fontsize=15
     )
     reference_bands: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
-    for row_index, parameter in enumerate(ACE_PARAM_NAMES):
+    for row_index, parameter in enumerate(variable_names):
         for column_index, k_value in enumerate(k_values):
             axis = axes[row_index, column_index]
             subset = results.loc[
@@ -307,7 +413,7 @@ def save_calibration_ecdf(
                 axis.set_title(f"K={compact_number(k_value)}")
             if column_index == 0:
                 axis.set_ylabel(f"{parameter}\nEmpirical CDF - uniform CDF")
-            if row_index == len(ACE_PARAM_NAMES) - 1:
+            if row_index == len(variable_names) - 1:
                 axis.set_xlabel("Uniform rank CDF")
 
     fig.text(
@@ -486,6 +592,7 @@ def save_all_figures(
     metrics: pd.DataFrame,
     args: argparse.Namespace,
     figures_dir: Path,
+    rmse_results: pd.DataFrame | None = None,
 ) -> None:
     """Create every diagnostic figure from retained tabular results."""
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -497,6 +604,16 @@ def save_all_figures(
             args.n_posterior_draws,
             figures_dir / f"calibration_ecdf_N{n_value}.png",
         )
+        if rmse_results is not None:
+            save_calibration_ecdf(
+                rmse_results.assign(parameter="RMSE"),
+                n_value,
+                args.k_values,
+                args.n_posterior_draws,
+                figures_dir / f"predictive_rmse_sbc_ecdf_N{n_value}.png",
+                variable_names=("RMSE",),
+                title="Covariance-prediction RMSE SBC",
+            )
         save_recovery(
             results,
             metrics,
@@ -532,12 +649,14 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     cells_dir = output_dir / "cells"
     missing = []
     frames = []
+    rmse_frames = []
     metadata_rows = []
     for k_value, n_value in pairs:
         stem = cell_stem(k_value, n_value)
         results_path = cells_dir / f"{stem}.csv"
+        rmse_path = cells_dir / f"{stem}_rmse_sbc.csv"
         metadata_path = cells_dir / f"{stem}.json"
-        if not results_path.exists() or not metadata_path.exists():
+        if not results_path.exists() or not metadata_path.exists() or not rmse_path.exists():
             missing.append(stem)
             continue
         frame = pd.read_csv(results_path)
@@ -548,21 +667,9 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
             )
         with open(metadata_path) as handle:
             metadata = json.load(handle)
-        expected_metadata = {
-            "K": k_value,
-            "N": n_value,
-            "M": args.n_test_datasets,
-            "L": args.n_posterior_draws,
-        }
-        mismatches = {
-            key: (metadata.get(key), expected)
-            for key, expected in expected_metadata.items()
-            if metadata.get(key) != expected
-        }
-        if mismatches:
-            raise ValueError(
-                f"{metadata_path} is incompatible with this aggregation: {mismatches}"
-            )
+        validate_cell_metadata(
+            metadata, expected_cell_metadata(k_value, n_value, args), metadata_path
+        )
         required_columns = {
             "K",
             "N",
@@ -580,23 +687,44 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
             raise ValueError(
                 f"{results_path} is missing columns: {sorted(missing_columns)}"
             )
+        if (
+            not (frame["K"] == k_value).all() or not (frame["N"] == n_value).all()
+            or frame.duplicated(["test_dataset_m", "parameter"]).any()
+            or set(frame["parameter"]) != set(ACE_PARAM_NAMES)
+        ):
+            raise ValueError(f"{results_path} has incorrect or duplicate marginal SBC rows")
+        for parameter in ACE_PARAM_NAMES:
+            if set(frame.loc[frame["parameter"] == parameter, "test_dataset_m"]) != set(
+                range(1, args.n_test_datasets + 1)
+            ):
+                raise ValueError(f"{results_path} has missing marginal SBC dataset IDs")
+        rmse_frame = pd.read_csv(rmse_path)
+        validate_rmse_results(
+            rmse_frame, k_value, n_value, args.n_test_datasets, args.n_posterior_draws
+        )
         frames.append(frame)
+        rmse_frames.append(rmse_frame)
         metadata_rows.append(metadata)
     if missing:
         raise FileNotFoundError(
-            "Cannot aggregate; missing diagnostic cells: " + ", ".join(missing)
+            "Cannot aggregate; missing diagnostic or RMSE SBC cell files: "
+            + ", ".join(missing)
+            + ". Rerun these cells; old marginal summaries cannot recover RMSE "
+            "ranks because joint posterior draws were discarded."
         )
 
     results = pd.concat(frames, ignore_index=True)
+    rmse_results = pd.concat(rmse_frames, ignore_index=True)
     results["n_posterior_draws"] = args.n_posterior_draws
     metrics = compute_metrics(results)
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     write_csv_atomic(results, output_dir / "diagnostic_results.csv")
+    write_csv_atomic(rmse_results, output_dir / "predictive_rmse_sbc_results.csv")
     write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
     write_csv_atomic(pd.DataFrame(metadata_rows), output_dir / "cell_runtimes.csv")
-    save_all_figures(results, metrics, args, figures_dir)
+    save_all_figures(results, metrics, args, figures_dir, rmse_results)
 
     config = {
         "step": "06_npe_diagnostics",
@@ -608,22 +736,16 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
         "prior": "Dirichlet(1, 1, 1)",
         "prior_marginal_variance": PRIOR_VARIANCE,
         "nrmse_normalization_range": PRIOR_RANGE,
+        "rmse_sbc": RMSE_SBC_DEFINITION,
+        "seed": args.seed,
+        "training_seed": args.training_seed,
         "ecdf_reference_probability": ECDF_REFERENCE_PROBABILITY,
         "ecdf_band_simulations": ECDF_BAND_SIMULATIONS,
         "ecdf_band_seed": ECDF_BAND_SEED,
         "ecdf_band_max_points": ECDF_BAND_MAX_POINTS,
         "models_saved": False,
         "posterior_draws_saved": False,
-        "training": {
-            "validation_fraction": args.validation_fraction,
-            "epochs": args.epochs,
-            "stop_after_epochs": args.stop_after_epochs,
-            "batch_size": args.batch_size,
-            "learning_rate": args.learning_rate,
-            "flow_type": args.flow_type,
-            "flow_hidden": args.flow_hidden,
-            "flow_transforms": args.flow_transforms,
-        },
+        "training": training_settings(args),
     }
     write_json_atomic(config, output_dir / "config.json")
     (output_dir / "COMPLETE").write_text("complete\n")
@@ -656,9 +778,24 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
     )
 
     results = pd.read_csv(results_path)
+    rmse_results = None
+    rmse_path = output_dir / "predictive_rmse_sbc_results.csv"
+    if "rmse_sbc" in config:
+        if config["rmse_sbc"] != RMSE_SBC_DEFINITION:
+            raise ValueError("Retained RMSE SBC definition differs from the current quantity")
+        rmse_results = pd.read_csv(rmse_path)
+        if len(rmse_results) != len(args.k_values) * len(args.n_values) * args.n_test_datasets:
+            raise ValueError("Retained RMSE SBC table has an unexpected number of rows")
+        for k_value, n_value in cell_pairs(args.k_values, args.n_values):
+            validate_rmse_results(
+                rmse_results.loc[(rmse_results["K"] == k_value) & (rmse_results["N"] == n_value)],
+                k_value, n_value, args.n_test_datasets, args.n_posterior_draws,
+            )
+    else:
+        print("Legacy marginal-only results: replotting existing diagnostics without RMSE SBC.")
     metrics = compute_metrics(results)
     write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
-    save_all_figures(results, metrics, args, output_dir / "figures")
+    save_all_figures(results, metrics, args, output_dir / "figures", rmse_results)
 
     config.update(
         {
@@ -674,7 +811,7 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run SBC, recovery, and contraction diagnostics for ACE NPEs"
+        description="Run marginal and predictive-RMSE SBC, recovery, and contraction for ACE NPEs"
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--cell-index", type=int, help="One-based K x N array index")
