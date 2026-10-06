@@ -44,7 +44,7 @@ The standardized covariance summaries enter the flow directly through
 | 03 | `03_training_budget_grid.py` | Compare training budgets across fixed N values |
 | 04 | `04_compare_fixed_n_dirichlet_openmx.py` | Compare saved fixed-N Dirichlet NPEs with OpenMx on paired data |
 | 05 | `05_compare_training_sizes_openmx.py` | Compare OpenMx with the retained Step 03 NPE results |
-| 06 | `06_npe_diagnostics.py` | Marginal SBC, predictive-RMSE SBC, recovery, and contraction |
+| 06 | `06_npe_diagnostics.py` | SBC, recovery, contraction, single-dataset posterior plots, and PPCs |
 | 07 | `07_evaluate_fixed_theta.py` | Evaluate saved 100k models on repeated datasets at one fixed theta |
 | 08 | `08_fixed_theta_npe_ensemble.py` | Evaluate the saved 100-model fixed-theta ensemble |
 | 09 | `09_decompose_fixed_theta_variance.py` | Compare total, model, dataset, and posterior uncertainty |
@@ -56,7 +56,7 @@ exact test covariance matrices; it does not load or retrain NPEs. Steps 04, 07,
 and 08 require saved models. Steps 09 and 10 require the completed Step 08
 aggregation.
 
-## Step 06: marginal and predictive-RMSE SBC on RC
+## Step 06: posterior diagnostics and PPCs on RC
 
 Submit from the repository root on CU Boulder Alpine:
 
@@ -75,6 +75,8 @@ The array and aggregation scripts share this design:
 | H | 1 per K × N cell |
 | M | 1,000 fresh prior-predictive datasets per N, shared across K |
 | L | 2,000 joint posterior draws per dataset |
+| Inspection dataset | Dataset 1 per N, shared across K; one dataset per corner plot |
+| PPC replicates | 500 per test dataset, selected from its joint posterior draws |
 | Prior | Dirichlet(1,1,1), total variance fixed at 1 |
 | Flow | NSF, 64 hidden features, 5 transforms |
 | Training | Up to 500 epochs; early stopping after 50 epochs without improvement |
@@ -118,24 +120,59 @@ bands. A uniform rank distribution is the target; minimum RMSE is not the SBC
 criterion. SBC evaluation draws fresh theta values from the matching prior;
 the fixed-theta datasets in Steps 07–10 serve a separate purpose.
 
-The new default output is `ace_npe/results/step06_npe_diagnostics_rmse/`, keeping
-earlier results in `step06_npe_diagnostics/` separate:
+### Posterior inspection and posterior predictive checks
+
+`posterior_checks.py` makes one corner plot per K × N cell, using only the
+selected test dataset's joint posterior draws. Marginal histograms show 95%
+credible intervals; pairwise scatter plots show parameter dependence, with
+the true ACE values overlaid. The simplex constraint A+C+E=1 induces dependence
+and makes a three-dimensional Euclidean KDE inappropriate. By default,
+`--inspection-dataset 1` selects the first test dataset within each N, shared
+across K. Different N groups have their own simulated dataset 1.
+
+`posterior_predictive_checks.py` reuses joint posterior draws for every test
+dataset. It selects `--n-ppc-replicates 500` draws without replacement, then
+generates one fresh noisy MZ/DZ sample-covariance replicate per draw at the
+observed N. The conditional simulator uses the same Wishart model and unbiased
+sample covariances as training (N-1 degrees of freedom). It receives the
+posterior parameters rather than drawing new parameters from the prior.
+Calculations and plots use original covariance units. Separate local NumPy
+seeds leave posterior sampling and existing SBC results unaffected.
+
+The selected dataset gets four predictive-summary histograms and a joint
+MZ/DZ covariance scatter plot, with observations overlaid. Compact summaries
+for every test dataset include predictive means, SDs, medians, 95% intervals,
+interval-inclusion indicators, and upper-tail fractions. These are descriptive
+model-fit quantities: tail fractions are not SBC ranks or calibrated p-values,
+and same-data PPC interval inclusion need not have nominal 95% frequency.
+These checks include sampling noise, whereas RMSE SBC above compares
+deterministic population-covariance predictions. Raw phenotype distribution
+and tail checks are outside this covariance-summary PPC.
+
+The new default output is `ace_npe/results/step06_npe_diagnostics_ppc/`, keeping
+earlier results in `step06_npe_diagnostics/` and `step06_npe_diagnostics_rmse/` separate:
 
 | Output | Contents |
 |---|---|
 | `diagnostic_results.csv` | Existing per-dataset, per-parameter summaries and marginal ranks |
 | `diagnostic_metrics.csv` | Existing bias, parameter RMSE/NRMSE, R-squared, and uncertainty metrics |
 | `predictive_rmse_sbc_results.csv` | One row per dataset and cell: observed summaries, true ACE values, true RMSE, posterior RMSE summaries, rank, and tie counts |
+| `posterior_predictive_results.csv` | Four rows per dataset and cell, with predictive-summary statistics and descriptive fit checks |
+| `diagnostic_samples/K*_N*.npz` | Joint posterior draws, truth, observed summaries, and PPC replicates for only the selected dataset per cell |
 | `cell_runtimes.csv` | Runtime, seeds, and configuration for each cell |
-| `config.json` | Experiment, training, RMSE definition, and ECDF settings |
+| `config.json` | Experiment, training, RMSE/PPC definitions, selected dataset, replicate count, and ECDF settings |
 | `figures/calibration_ecdf_N*.png` | Existing marginal SBC plots |
 | `figures/predictive_rmse_sbc_ecdf_N*.png` | Additional RMSE SBC plots, one panel per K |
 | `figures/recovery_N*.png` | Existing posterior-mean recovery plots |
 | `figures/z_score_contraction_N*.png` | Existing z-score versus contraction plots |
 | `figures/nrmse_by_n.png`, `figures/r_squared_by_n.png` | Existing recovery metrics over N |
+| `figures/posterior/corner_K*_N*_dataset*.png` | Single-dataset corner plots |
+| `figures/ppc/ppc_K*_N*_dataset*.png` | Single-dataset predictive-summary histograms and joint covariance plots |
 | `COMPLETE` | Written after successful aggregation and figure generation |
 
-Fitted models and full posterior draws remain in memory and are discarded.
+Fitted models and posterior draws for unselected datasets remain in memory
+and are discarded. Selected-dataset NPZ archives survive aggregation so
+corner and PPC figures can be replotted without sampling or simulation.
 Temporary cell CSVs and metadata are removed only after successful aggregation;
 use `--keep-cell-files` to retain them. Completed cells are reused only when
 both diagnostic tables and matching configuration are present. Change the
@@ -149,8 +186,10 @@ Figures from the new run can subsequently be regenerated without training:
 python ace_npe/06_npe_diagnostics.py --replot --device cpu
 ```
 
-An earlier marginal-only run can still be replotted with
-`--output-dir step06_npe_diagnostics`; this does not add RMSE SBC to that run.
+Earlier runs can still be replotted with `--output-dir step06_npe_diagnostics`
+or `--output-dir step06_npe_diagnostics_rmse`; this does not add diagnostics
+requiring joint draws to those runs. New posterior plots and PPCs require a
+fresh run because earlier models and joint draws were discarded.
 A full sequential run is available with `--run-all`. For a small local smoke
 check of training, sampling, aggregation, and all plots:
 
@@ -158,9 +197,10 @@ check of training, sampling, aggregation, and all plots:
 python ace_npe/06_npe_diagnostics.py --run-all --device cpu \
   --k-values 200 300 400 --n-values 100 \
   --n-test-datasets 8 --n-posterior-draws 20 \
+  --inspection-dataset 1 --n-ppc-replicates 20 \
   --epochs 1 --stop-after-epochs 1 --batch-size 64 \
   --flow-hidden 8 --flow-transforms 2 \
-  --output-dir /tmp/ace_rmse_sbc_smoke
+  --output-dir /tmp/ace_ppc_smoke
 ```
 
 These small settings verify execution; they are not a calibration study.

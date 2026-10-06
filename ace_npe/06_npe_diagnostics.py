@@ -16,10 +16,11 @@ For each N, aggregation creates separate 3 x 3 figures (ACE parameters by K)
 for marginal SBC calibration ECDFs, recovery, and z-score versus contraction.
 An additional covariance-prediction RMSE SBC figure compares the K values for
 each N, using the same joint posterior draws and original covariance features.
-NRMSE
-and R-squared are summarized as line plots over N.  Only compact diagnostic
-tables and figures are retained; neither fitted models nor posterior draws are
-serialized.
+NRMSE and R-squared are summarized as line plots over N. Posterior corner
+plots and noisy covariance-summary PPCs inspect one selected dataset per N,
+shared across K. Compact PPC summaries cover all test datasets. Joint draws
+and PPC replicates are retained only for the selected dataset in each cell;
+fitted models are never serialized.
 """
 
 from __future__ import annotations
@@ -41,6 +42,10 @@ from scipy.stats import binom
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ace_model import ACE_PARAM_NAMES, COV_FEATURE_NAMES, RESULTS_DIR, resolve
 from rmse_sbc import RMSE_SBC_DEFINITION, summarize_rmse_sbc
+from posterior_checks import save_corner_plot
+from posterior_predictive_checks import (
+    PPC_DEFINITION, posterior_predictive_replicates, summarize_ppc, save_ppc_plots,
+)
 from training_budget_utils import (
     evaluate_cell,
     resolve_device,
@@ -52,7 +57,7 @@ from training_budget_utils import (
 
 DEFAULT_K_VALUES = (100_000, 300_000, 500_000)
 DEFAULT_N_VALUES = (50, 100, 500, 1_000, 2_000, 5_000, 20_000)
-DEFAULT_OUTPUT_DIR = "step06_npe_diagnostics_rmse"
+DEFAULT_OUTPUT_DIR = "step06_npe_diagnostics_ppc"
 PRIOR_VARIANCE = 1.0 / 18.0  # Marginal variance under Dirichlet(1, 1, 1).
 PRIOR_RANGE = 1.0
 ECDF_REFERENCE_PROBABILITY = 0.95
@@ -117,6 +122,10 @@ def expected_cell_metadata(k_value: int, n_value: int, args: argparse.Namespace)
         "posterior_seed": seed_from(args.seed, k_value, n_value, 30),
         "rmse_tie_seed": seed_from(args.seed, k_value, n_value, 40),
         "rmse_sbc": RMSE_SBC_DEFINITION,
+        "ppc": PPC_DEFINITION,
+        "inspection_dataset": args.inspection_dataset,
+        "n_ppc_replicates": args.n_ppc_replicates,
+        "ppc_seed": seed_from(args.seed, k_value, n_value, 50),
         "training": training_settings(args),
     }
 
@@ -170,6 +179,64 @@ def validate_rmse_results(
         raise ValueError("Invalid RMSE SBC ranks or tie counts")
 
 
+def selected_samples_path(output_dir: Path, k_value: int, n_value: int) -> Path:
+    return output_dir / "diagnostic_samples" / f"{cell_stem(k_value, n_value)}.npz"
+
+
+def validate_ppc_results(
+    frame: pd.DataFrame, k_value: int, n_value: int, n_tests: int, n_replicates: int
+) -> None:
+    required = {"K", "N", "test_dataset_m", "feature", "observed", "predictive_mean",
+                "predictive_sd", "predictive_q2_5", "predictive_median", "predictive_q97_5",
+                "upper_tail_fraction", "observed_in_95_interval", "n_replicates"}
+    if required.difference(frame.columns):
+        raise ValueError(f"PPC table is missing columns: {sorted(required - set(frame.columns))}")
+    if (len(frame) != 4 * n_tests or frame.duplicated(["test_dataset_m", "feature"]).any()
+            or set(frame["feature"]) != set(COV_FEATURE_NAMES)
+            or not (frame["K"] == k_value).all() or not (frame["N"] == n_value).all()
+            or not (frame["n_replicates"] == n_replicates).all()):
+        raise ValueError("PPC rows do not match the requested cell")
+    for feature in COV_FEATURE_NAMES:
+        if set(frame.loc[frame["feature"] == feature, "test_dataset_m"]) != set(range(1, n_tests + 1)):
+            raise ValueError("PPC table has missing dataset IDs")
+    if not np.isfinite(frame[list(required - {"feature"})].to_numpy(dtype=float)).all():
+        raise ValueError("PPC table contains non-finite values")
+    if (not frame["upper_tail_fraction"].between(0, 1).all()
+            or not frame["observed_in_95_interval"].isin([0, 1]).all()
+            or (frame["predictive_sd"] < 0).any()
+            or (frame["predictive_q2_5"] > frame["predictive_median"]).any()
+            or (frame["predictive_median"] > frame["predictive_q97_5"]).any()):
+        raise ValueError("Invalid PPC summary values")
+
+
+def load_selected_samples(
+    output_dir: Path, k_value: int, n_value: int, args: argparse.Namespace
+) -> dict[str, np.ndarray]:
+    path = selected_samples_path(output_dir, k_value, n_value)
+    with np.load(path, allow_pickle=False) as archive:
+        data = {key: archive[key] for key in archive.files}
+    expected_shapes = {"posterior": (args.n_posterior_draws, 3), "truth": (3,),
+                       "observed": (4,), "replicates": (args.n_ppc_replicates, 4)}
+    for key, shape in expected_shapes.items():
+        if key not in data or data[key].shape != shape or not np.isfinite(data[key]).all():
+            raise ValueError(f"Invalid selected-dataset {key} in {path}")
+    for key, value in {"K": k_value, "N": n_value, "test_dataset_m": args.inspection_dataset}.items():
+        if key not in data or data[key].shape != () or data[key].item() != value:
+            raise ValueError(f"Selected-dataset {key} does not match this run: {path}")
+    return data
+
+
+def save_inspection_figures(args: argparse.Namespace, output_dir: Path) -> None:
+    for k_value, n_value in cell_pairs(args.k_values, args.n_values):
+        data = load_selected_samples(output_dir, k_value, n_value, args)
+        stem = f"{cell_stem(k_value, n_value)}_dataset{args.inspection_dataset}"
+        title = f"K={k_value:,}; N={n_value:,}; test dataset {args.inspection_dataset}"
+        save_corner_plot(data["posterior"], data["truth"],
+                         output_dir / "figures" / "posterior" / f"corner_{stem}.png", title)
+        save_ppc_plots(data["replicates"], data["observed"],
+                       output_dir / "figures" / "ppc" / f"ppc_{stem}.png", title)
+
+
 def run_cell(
     k_value: int,
     n_value: int,
@@ -182,15 +249,21 @@ def run_cell(
     stem = cell_stem(k_value, n_value)
     results_path = cells_dir / f"{stem}.csv"
     rmse_path = cells_dir / f"{stem}_rmse_sbc.csv"
+    ppc_path = cells_dir / f"{stem}_ppc.csv"
+    samples_path = selected_samples_path(output_dir, k_value, n_value)
     metadata_path = cells_dir / f"{stem}.json"
     expected_metadata = expected_cell_metadata(k_value, n_value, args)
-    if results_path.exists() and metadata_path.exists() and rmse_path.exists() and not args.overwrite:
+    if metadata_path.exists() and not args.overwrite:
         with metadata_path.open() as handle:
             validate_cell_metadata(json.load(handle), expected_metadata, metadata_path)
+    if all(path.exists() for path in (results_path, metadata_path, rmse_path, ppc_path, samples_path)) and not args.overwrite:
         validate_rmse_results(
             pd.read_csv(rmse_path), k_value, n_value,
             args.n_test_datasets, args.n_posterior_draws,
         )
+        validate_ppc_results(pd.read_csv(ppc_path), k_value, n_value,
+                             args.n_test_datasets, args.n_ppc_replicates)
+        load_selected_samples(output_dir, k_value, n_value, args)
         print(f"Skipping completed diagnostic cell K={k_value:,}, N={n_value:,}")
         return
 
@@ -210,8 +283,10 @@ def run_cell(
     posterior_seed = seed_from(args.seed, k_value, n_value, 30)
     rmse_tie_rng = np.random.default_rng(expected_metadata["rmse_tie_seed"])
     rmse_rows = []
+    ppc_rows = []
+    selected = {}
 
-    def collect_rmse(test_index: int, draws: np.ndarray) -> None:
+    def collect_diagnostics(test_index: int, draws: np.ndarray) -> None:
         observed = test_features[test_index - 1]
         truth = test_ace[test_index - 1]
         rmse_rows.append({
@@ -223,6 +298,16 @@ def run_cell(
             **dict(zip((f"true_{name}" for name in ACE_PARAM_NAMES), map(float, truth))),
             **summarize_rmse_sbc(draws, truth, observed, rmse_tie_rng),
         })
+        replicates = posterior_predictive_replicates(
+            draws, n_value, args.n_ppc_replicates,
+            seed_from(expected_metadata["ppc_seed"], test_index),
+        )
+        ppc_rows.extend({"K": k_value, "N": n_value, "test_dataset_m": test_index, **row}
+                        for row in summarize_ppc(replicates, observed))
+        if test_index == args.inspection_dataset:
+            selected.update(posterior=draws.copy(), truth=truth.copy(), observed=observed.copy(),
+                            replicates=replicates, K=np.array(k_value), N=np.array(n_value),
+                            test_dataset_m=np.array(test_index))
 
     results = evaluate_cell(
         posterior,
@@ -233,8 +318,10 @@ def run_cell(
         n_value,
         args.n_posterior_draws,
         posterior_seed,
-        draw_callback=collect_rmse,
+        draw_callback=collect_diagnostics,
     )
+    ppc_results = pd.DataFrame(ppc_rows)
+    validate_ppc_results(ppc_results, k_value, n_value, args.n_test_datasets, args.n_ppc_replicates)
     rmse_results = pd.DataFrame(rmse_rows)
     validate_rmse_results(
         rmse_results, k_value, n_value, args.n_test_datasets, args.n_posterior_draws
@@ -257,18 +344,25 @@ def run_cell(
         "elapsed_seconds": elapsed_seconds,
         "device": str(args.device_resolved),
         "models_saved": False,
-        "posterior_draws_saved": False,
+        "posterior_draws_saved": "selected dataset only",
     }
     write_csv_atomic(results, results_path)
     write_csv_atomic(rmse_results, rmse_path)
+    write_csv_atomic(ppc_results, ppc_path)
+    samples_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = samples_path.with_suffix(".npz.tmp")
+    with temporary.open("wb") as handle:
+        np.savez_compressed(handle, **selected)
+    temporary.replace(samples_path)
     write_json_atomic(metadata, metadata_path)
     print(
         f"Completed K={k_value:,}, N={n_value:,} in "
         f"{elapsed_seconds / 60.0:.1f} minutes -> {results_path}"
     )
 
-    # Fitted model and full draws are deliberately never serialized.
+    # Only the selected dataset's draws survive; the fitted model is discarded.
     del posterior, scaler, features, ace, test_features, test_ace, results, rmse_results, rmse_rows
+    del ppc_results, ppc_rows, selected
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -645,17 +739,20 @@ def save_all_figures(
 
 
 def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
+    (output_dir / "COMPLETE").unlink(missing_ok=True)
     pairs = cell_pairs(args.k_values, args.n_values)
     cells_dir = output_dir / "cells"
     missing = []
     frames = []
     rmse_frames = []
+    ppc_frames = []
     metadata_rows = []
     for k_value, n_value in pairs:
         stem = cell_stem(k_value, n_value)
         results_path = cells_dir / f"{stem}.csv"
         rmse_path = cells_dir / f"{stem}_rmse_sbc.csv"
         metadata_path = cells_dir / f"{stem}.json"
+        ppc_path = cells_dir / f"{stem}_ppc.csv"
         if not results_path.exists() or not metadata_path.exists() or not rmse_path.exists():
             missing.append(stem)
             continue
@@ -702,8 +799,14 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
         validate_rmse_results(
             rmse_frame, k_value, n_value, args.n_test_datasets, args.n_posterior_draws
         )
+        if not ppc_path.exists() or not selected_samples_path(output_dir, k_value, n_value).exists():
+            raise FileNotFoundError(f"Missing PPC or selected-dataset samples for {stem}; rerun the cell")
+        ppc_frame = pd.read_csv(ppc_path)
+        validate_ppc_results(ppc_frame, k_value, n_value, args.n_test_datasets, args.n_ppc_replicates)
+        load_selected_samples(output_dir, k_value, n_value, args)
         frames.append(frame)
         rmse_frames.append(rmse_frame)
+        ppc_frames.append(ppc_frame)
         metadata_rows.append(metadata)
     if missing:
         raise FileNotFoundError(
@@ -715,6 +818,7 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
 
     results = pd.concat(frames, ignore_index=True)
     rmse_results = pd.concat(rmse_frames, ignore_index=True)
+    ppc_results = pd.concat(ppc_frames, ignore_index=True)
     results["n_posterior_draws"] = args.n_posterior_draws
     metrics = compute_metrics(results)
     figures_dir = output_dir / "figures"
@@ -722,9 +826,11 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
 
     write_csv_atomic(results, output_dir / "diagnostic_results.csv")
     write_csv_atomic(rmse_results, output_dir / "predictive_rmse_sbc_results.csv")
+    write_csv_atomic(ppc_results, output_dir / "posterior_predictive_results.csv")
     write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
     write_csv_atomic(pd.DataFrame(metadata_rows), output_dir / "cell_runtimes.csv")
     save_all_figures(results, metrics, args, figures_dir, rmse_results)
+    save_inspection_figures(args, output_dir)
 
     config = {
         "step": "06_npe_diagnostics",
@@ -737,6 +843,9 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
         "prior_marginal_variance": PRIOR_VARIANCE,
         "nrmse_normalization_range": PRIOR_RANGE,
         "rmse_sbc": RMSE_SBC_DEFINITION,
+        "ppc": PPC_DEFINITION,
+        "inspection_dataset": args.inspection_dataset,
+        "n_ppc_replicates": args.n_ppc_replicates,
         "seed": args.seed,
         "training_seed": args.training_seed,
         "ecdf_reference_probability": ECDF_REFERENCE_PROBABILITY,
@@ -744,7 +853,7 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
         "ecdf_band_seed": ECDF_BAND_SEED,
         "ecdf_band_max_points": ECDF_BAND_MAX_POINTS,
         "models_saved": False,
-        "posterior_draws_saved": False,
+        "posterior_draws_saved": "selected dataset only",
         "training": training_settings(args),
     }
     write_json_atomic(config, output_dir / "config.json")
@@ -771,6 +880,19 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
     args.n_values = tuple(int(value) for value in config["N_values"])
     args.n_test_datasets = int(config["M"])
     args.n_posterior_draws = int(config["L"])
+    if "ppc" in config:
+        if config["ppc"] != PPC_DEFINITION:
+            raise ValueError("Retained PPC definition differs from the current check")
+        args.inspection_dataset = int(config["inspection_dataset"])
+        args.n_ppc_replicates = int(config["n_ppc_replicates"])
+        ppc_results = pd.read_csv(output_dir / "posterior_predictive_results.csv")
+        if len(ppc_results) != 4 * len(args.k_values) * len(args.n_values) * args.n_test_datasets:
+            raise ValueError("Retained PPC table has an unexpected number of rows")
+        for k_value, n_value in cell_pairs(args.k_values, args.n_values):
+            validate_ppc_results(
+                ppc_results.loc[(ppc_results["K"] == k_value) & (ppc_results["N"] == n_value)],
+                k_value, n_value, args.n_test_datasets, args.n_ppc_replicates,
+            )
     print(
         f"Replotting STEP 06: H=1; M={args.n_test_datasets:,}; "
         f"L={args.n_posterior_draws:,}; "
@@ -796,6 +918,10 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
     metrics = compute_metrics(results)
     write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
     save_all_figures(results, metrics, args, output_dir / "figures", rmse_results)
+    if "ppc" in config:
+        save_inspection_figures(args, output_dir)
+    else:
+        print("Legacy results: posterior plots and PPCs require a new run with retained joint draws.")
 
     config.update(
         {
@@ -811,7 +937,7 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run marginal and predictive-RMSE SBC, recovery, and contraction for ACE NPEs"
+        description="Run SBC, recovery, contraction, posterior corner plots, and PPCs for ACE NPEs"
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--cell-index", type=int, help="One-based K x N array index")
@@ -822,6 +948,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-values", type=int, nargs="+", default=list(DEFAULT_N_VALUES))
     parser.add_argument("--n-test-datasets", type=int, default=1000, metavar="M")
     parser.add_argument("--n-posterior-draws", type=int, default=2000, metavar="L")
+    parser.add_argument("--inspection-dataset", type=int, default=1,
+                        help="One-based test dataset for corner/PPC plots, shared across K within N")
+    parser.add_argument("--n-ppc-replicates", type=int, default=500,
+                        help="Noisy PPC replicates per dataset (must be <= L); default: 500")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--training-seed", type=int, default=42)
@@ -850,6 +980,11 @@ def parse_args() -> argparse.Namespace:
         parser.error("M must be at least 2")
     if args.n_posterior_draws < 20:
         parser.error("L must be at least 20")
+    if not args.replot:
+        if not 1 <= args.inspection_dataset <= args.n_test_datasets:
+            parser.error("--inspection-dataset must lie between 1 and M")
+        if not 2 <= args.n_ppc_replicates <= args.n_posterior_draws:
+            parser.error("--n-ppc-replicates must lie between 2 and L")
     if not 0.0 < args.validation_fraction < 0.5:
         parser.error("--validation-fraction must lie between 0 and 0.5")
     if args.epochs < 1 or args.stop_after_epochs < 1 or args.batch_size < 1:

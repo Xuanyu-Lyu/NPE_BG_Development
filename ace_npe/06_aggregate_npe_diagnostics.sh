@@ -30,5 +30,7 @@ python -u ace_npe/06_npe_diagnostics.py \
   --n-values 50 100 500 1000 2000 5000 20000 \
   --n-test-datasets 1000 \
   --n-posterior-draws 2000 \
-  --output-dir step06_npe_diagnostics_rmse \
+  --inspection-dataset 1 \
+  --n-ppc-replicates 500 \
+  --output-dir step06_npe_diagnostics_ppc \
   --device cpu

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Train and diagnose one transient (K,N) NPE per Alpine array task.
-# Marginal SBC plus covariance-prediction RMSE SBC on the same posterior draws.
+# SBC, recovery, posterior inspection, and noisy covariance-summary PPCs.
 # Submit from the repository root with: sbatch ace_npe/06_npe_diagnostics.sh
 
 #SBATCH --job-name=ace06-diag
@@ -36,5 +36,7 @@ python -u ace_npe/06_npe_diagnostics.py \
   --n-values 50 100 500 1000 2000 5000 20000 \
   --n-test-datasets 1000 \
   --n-posterior-draws 2000 \
-  --output-dir step06_npe_diagnostics_rmse \
+  --inspection-dataset 1 \
+  --n-ppc-replicates 500 \
+  --output-dir step06_npe_diagnostics_ppc \
   --device cpu

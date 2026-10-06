@@ -52,9 +52,9 @@ def _wishart_compound_symmetric_summaries(
     a22_rng = np.random.default_rng(seed_from(seed, 3))
     a11 = np.sqrt(a11_rng.chisquare(degrees_freedom, size=len(correlations)))
     a21 = a21_rng.standard_normal(size=len(correlations))
-    a22 = np.sqrt(
-        a22_rng.chisquare(degrees_freedom - 1, size=len(correlations))
-    )
+    # N=2 gives a rank-one sample covariance (one degree of freedom).
+    a22 = (np.zeros(len(correlations)) if degrees_freedom == 1 else
+           np.sqrt(a22_rng.chisquare(degrees_freedom - 1, size=len(correlations))))
 
     l22 = np.sqrt(np.maximum(1.0 - correlations**2, 0.0))
     b11 = a11
@@ -64,6 +64,34 @@ def _wishart_compound_symmetric_summaries(
     s12 = b11 * b21 / degrees_freedom
     s22 = (b21**2 + b22**2) / degrees_freedom
     return s11, s12, s22
+
+
+def simulate_summaries_given_ace(
+    ace: np.ndarray, n_pairs: int, seed: int
+) -> np.ndarray:
+    """Draw one noisy covariance-summary replicate per supplied ACE vector.
+
+    Uses the same Gaussian/Wishart observation model as fixed-N training,
+    with unbiased sample covariances (N-1 degrees of freedom). Parameters
+    are supplied by the caller, never redrawn from the prior. Returns the
+    four unstandardized features in COV_FEATURE_NAMES order.
+    """
+    ace = np.asarray(ace, dtype=np.float64)
+    if ace.ndim != 2 or ace.shape[1] != 3 or len(ace) == 0:
+        raise ValueError("ace must have shape (n_replicates, 3)")
+    if (not np.isfinite(ace).all() or np.any(ace <= 0)
+            or not np.allclose(ace.sum(axis=1), 1.0, rtol=0, atol=1e-6)):
+        raise ValueError("ace must contain positive, finite simplex vectors")
+    # Remove float32 roundoff in the sum without changing covariance units.
+    ace = ace / ace.sum(axis=1, keepdims=True)
+    mz = _wishart_compound_symmetric_summaries(
+        ace[:, 0] + ace[:, 1], n_pairs, seed_from(seed, 2)
+    )
+    dz = _wishart_compound_symmetric_summaries(
+        0.5 * ace[:, 0] + ace[:, 1], n_pairs, seed_from(seed, 3)
+    )
+    return np.column_stack((0.5 * (mz[0] + mz[2]), mz[1],
+                            0.5 * (dz[0] + dz[2]), dz[1]))
 
 
 def simulate_fixed_n(
