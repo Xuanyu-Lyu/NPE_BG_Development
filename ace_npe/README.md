@@ -120,6 +120,36 @@ bands. A uniform rank distribution is the target; minimum RMSE is not the SBC
 criterion. SBC evaluation draws fresh theta values from the matching prior;
 the fixed-theta datasets in Steps 07–10 serve a separate purpose.
 
+### SBC log gamma
+
+Aggregation and `--replot` add a log-gamma score for A, C, E, and the existing
+covariance-prediction RMSE quantity in every K × N cell. Each score uses all
+retained dataset ranks for its quantity, including the already randomized
+RMSE ties; it requires no new training, posterior sampling, or PPC simulation.
+The new calculation is in `sbc_log_gamma.py` and follows the statistic in
+Modrak et al. (2025), equation 7, as implemented in
+[BayesFlow 2.0.14](https://bayesflow.org/v2.0.14/_modules/bayesflow/diagnostics/metrics/calibration_log_gamma.html).
+
+For j=1,...,L+1, let R_j count ranks less than j and z_j=j/(L+1). Under the
+uniform-rank null, R_j follows Binomial(M, z_j). Gamma is twice the minimum,
+over j, of the lower and upper binomial tail probabilities. Log gamma is
+`log(gamma / gamma_threshold)`, where the threshold is the fifth percentile
+of 1,000 simulated null gamma values. A local NumPy generator uses seed
+20261007, and matching M/L settings reuse a cached threshold. Calculations
+use log probabilities and exact log-PMF sums if binomial tails underflow, so
+extreme departures can still have finite log-gamma scores even if raw gamma
+is too small to represent and is saved as zero.
+
+Negative scores indicate rejection of uniformity at the approximate 5% level
+for that quantity. Zero is the rejection boundary; positive scores do not
+prove posterior correctness. Thresholds account for searching the rank grid,
+but do not adjust for comparisons across quantities or cells. All existing
+ECDF curves and reference bands retain their original calculation and styling,
+with log-gamma labels added to the panels. The existing band grid differs from
+the full rank grid used by log gamma, so a marginal visual/numeric disagreement
+near the boundary is possible. Training settings, cell metadata/resume checks,
+and all other diagnostic outputs retain their existing definitions.
+
 ### Posterior inspection and posterior predictive checks
 
 `posterior_checks.py` makes one corner plot per K × N cell, using only the
@@ -156,11 +186,12 @@ earlier results in `step06_npe_diagnostics/` and `step06_npe_diagnostics_rmse/` 
 |---|---|
 | `diagnostic_results.csv` | Existing per-dataset, per-parameter summaries and marginal ranks |
 | `diagnostic_metrics.csv` | Existing bias, parameter RMSE/NRMSE, R-squared, and uncertainty metrics |
+| `calibration_log_gamma.csv` | One row per cell and SBC quantity: gamma, threshold, log gamma, rejection indicator, M/L, and null simulation settings |
 | `predictive_rmse_sbc_results.csv` | One row per dataset and cell: observed summaries, true ACE values, true RMSE, posterior RMSE summaries, rank, and tie counts |
 | `posterior_predictive_results.csv` | Four rows per dataset and cell, with predictive-summary statistics and descriptive fit checks |
 | `diagnostic_samples/K*_N*.npz` | Joint posterior draws, truth, observed summaries, and PPC replicates for only the selected dataset per cell |
 | `cell_runtimes.csv` | Runtime, seeds, and configuration for each cell |
-| `config.json` | Experiment, training, RMSE/PPC definitions, selected dataset, replicate count, and ECDF settings |
+| `config.json` | Experiment, training, RMSE/PPC definitions, selected dataset, replicate count, ECDF settings, and log-gamma definition/settings |
 | `figures/calibration_ecdf_N*.png` | Existing marginal SBC plots |
 | `figures/predictive_rmse_sbc_ecdf_N*.png` | Additional RMSE SBC plots, one panel per K |
 | `figures/recovery_N*.png` | Existing posterior-mean recovery plots |
@@ -190,6 +221,8 @@ Earlier runs can still be replotted with `--output-dir step06_npe_diagnostics`
 or `--output-dir step06_npe_diagnostics_rmse`; this does not add diagnostics
 requiring joint draws to those runs. New posterior plots and PPCs require a
 fresh run because earlier models and joint draws were discarded.
+Log gamma can be added to those earlier runs through `--replot`, using their
+saved marginal ranks (and RMSE ranks when available), without retraining.
 A full sequential run is available with `--run-all`. For a small local smoke
 check of training, sampling, aggregation, and all plots:
 

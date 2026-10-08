@@ -1,5 +1,6 @@
 #!/bin/bash
 # Aggregate STEP 06 cells, create figures, and remove temporary cell files.
+# Includes marginal and RMSE SBC log-gamma scores and ECDF panel annotations.
 # Submit with an afterok dependency on the STEP 06 array.
 
 #SBATCH --job-name=ace06-plot

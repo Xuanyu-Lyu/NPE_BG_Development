@@ -1,6 +1,7 @@
 #!/bin/bash
 # Train and diagnose one transient (K,N) NPE per Alpine array task.
 # SBC, recovery, posterior inspection, and noisy covariance-summary PPCs.
+# Aggregation adds log-gamma scores from the retained SBC ranks.
 # Submit from the repository root with: sbatch ace_npe/06_npe_diagnostics.sh
 
 #SBATCH --job-name=ace06-diag

@@ -21,6 +21,8 @@ plots and noisy covariance-summary PPCs inspect one selected dataset per N,
 shared across K. Compact PPC summaries cover all test datasets. Joint draws
 and PPC replicates are retained only for the selected dataset in each cell;
 fitted models are never serialized.
+Aggregation and replotting also compute log-gamma scores from retained SBC
+ranks and annotate marginal/RMSE ECDF panels without changing their bands.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from scipy.stats import binom
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ace_model import ACE_PARAM_NAMES, COV_FEATURE_NAMES, RESULTS_DIR, resolve
 from rmse_sbc import RMSE_SBC_DEFINITION, summarize_rmse_sbc
+from sbc_log_gamma import LOG_GAMMA_SETTINGS, summarize_log_gamma
 from posterior_checks import save_corner_plot
 from posterior_predictive_checks import (
     PPC_DEFINITION, posterior_predictive_replicates, summarize_ppc, save_ppc_plots,
@@ -407,6 +410,26 @@ def compute_metrics(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def compute_log_gamma_metrics(
+    results: pd.DataFrame, n_draws: int, rmse_results: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Summarize every cell/quantity using all its existing SBC ranks."""
+    columns = ["K", "N", "parameter", "test_dataset_m", "true_rank"]
+    rank_tables = [results[columns]]
+    if rmse_results is not None:
+        rank_tables.append(rmse_results.assign(parameter="RMSE")[columns])
+    ranks = pd.concat(rank_tables, ignore_index=True)
+    if ranks.duplicated(["K", "N", "parameter", "test_dataset_m"]).any():
+        raise ValueError("Log gamma requires one rank per dataset, cell, and quantity")
+    rows = []
+    for (k_value, n_value, quantity), group in ranks.groupby(["K", "N", "parameter"], sort=True):
+        rows.append({
+            "K": int(k_value), "N": int(n_value), "quantity": quantity,
+            **summarize_log_gamma(group["true_rank"].to_numpy(), n_draws),
+        })
+    return pd.DataFrame(rows)
+
+
 def simultaneous_ecdf_band(
     n_estimates: int,
     confidence: float = ECDF_REFERENCE_PROBABILITY,
@@ -459,6 +482,7 @@ def save_calibration_ecdf(
     *,
     variable_names: tuple[str, ...] = tuple(ACE_PARAM_NAMES),
     title: str = "SBC calibration ECDF",
+    log_gamma_results: pd.DataFrame | None = None,
 ) -> None:
     """Plot SBC rank ECDF-minus-uniform with a tapered simultaneous band."""
     fig, axes = plt.subplots(
@@ -501,6 +525,17 @@ def save_calibration_ecdf(
                 linewidth=1.3,
             )
             axis.axhline(0.0, color="black", linewidth=0.8)
+            if log_gamma_results is not None:
+                score = log_gamma_results.loc[
+                    (log_gamma_results["K"] == k_value)
+                    & (log_gamma_results["N"] == n_value)
+                    & (log_gamma_results["quantity"] == parameter), "log_gamma"
+                ]
+                if len(score) != 1:
+                    raise ValueError(f"Expected one log-gamma score for K={k_value}, N={n_value}, {parameter}")
+                axis.text(0.98, 0.97, f"Log gamma = {float(score.iloc[0]):+.2f}",
+                          transform=axis.transAxes, ha="right", va="top", fontsize=9,
+                          bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"})
             axis.set_xlim(0.0, 1.0)
             axis.grid(alpha=0.2)
             if row_index == 0:
@@ -687,6 +722,7 @@ def save_all_figures(
     args: argparse.Namespace,
     figures_dir: Path,
     rmse_results: pd.DataFrame | None = None,
+    log_gamma_results: pd.DataFrame | None = None,
 ) -> None:
     """Create every diagnostic figure from retained tabular results."""
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -697,6 +733,7 @@ def save_all_figures(
             args.k_values,
             args.n_posterior_draws,
             figures_dir / f"calibration_ecdf_N{n_value}.png",
+            log_gamma_results=log_gamma_results,
         )
         if rmse_results is not None:
             save_calibration_ecdf(
@@ -707,6 +744,7 @@ def save_all_figures(
                 figures_dir / f"predictive_rmse_sbc_ecdf_N{n_value}.png",
                 variable_names=("RMSE",),
                 title="Covariance-prediction RMSE SBC",
+                log_gamma_results=log_gamma_results,
             )
         save_recovery(
             results,
@@ -821,6 +859,7 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     ppc_results = pd.concat(ppc_frames, ignore_index=True)
     results["n_posterior_draws"] = args.n_posterior_draws
     metrics = compute_metrics(results)
+    log_gamma_results = compute_log_gamma_metrics(results, args.n_posterior_draws, rmse_results)
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -828,8 +867,9 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
     write_csv_atomic(rmse_results, output_dir / "predictive_rmse_sbc_results.csv")
     write_csv_atomic(ppc_results, output_dir / "posterior_predictive_results.csv")
     write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
+    write_csv_atomic(log_gamma_results, output_dir / "calibration_log_gamma.csv")
     write_csv_atomic(pd.DataFrame(metadata_rows), output_dir / "cell_runtimes.csv")
-    save_all_figures(results, metrics, args, figures_dir, rmse_results)
+    save_all_figures(results, metrics, args, figures_dir, rmse_results, log_gamma_results)
     save_inspection_figures(args, output_dir)
 
     config = {
@@ -852,6 +892,7 @@ def aggregate(args: argparse.Namespace, output_dir: Path) -> None:
         "ecdf_band_simulations": ECDF_BAND_SIMULATIONS,
         "ecdf_band_seed": ECDF_BAND_SEED,
         "ecdf_band_max_points": ECDF_BAND_MAX_POINTS,
+        "log_gamma": LOG_GAMMA_SETTINGS,
         "models_saved": False,
         "posterior_draws_saved": "selected dataset only",
         "training": training_settings(args),
@@ -876,6 +917,8 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
 
     with open(config_path) as handle:
         config = json.load(handle)
+    if "log_gamma" in config and config["log_gamma"] != LOG_GAMMA_SETTINGS:
+        raise ValueError("Retained log-gamma settings differ from the current calculation")
     args.k_values = tuple(int(value) for value in config["K_values"])
     args.n_values = tuple(int(value) for value in config["N_values"])
     args.n_test_datasets = int(config["M"])
@@ -916,8 +959,10 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
     else:
         print("Legacy marginal-only results: replotting existing diagnostics without RMSE SBC.")
     metrics = compute_metrics(results)
+    log_gamma_results = compute_log_gamma_metrics(results, args.n_posterior_draws, rmse_results)
     write_csv_atomic(metrics, output_dir / "diagnostic_metrics.csv")
-    save_all_figures(results, metrics, args, output_dir / "figures", rmse_results)
+    write_csv_atomic(log_gamma_results, output_dir / "calibration_log_gamma.csv")
+    save_all_figures(results, metrics, args, output_dir / "figures", rmse_results, log_gamma_results)
     if "ppc" in config:
         save_inspection_figures(args, output_dir)
     else:
@@ -929,6 +974,7 @@ def replot(args: argparse.Namespace, output_dir: Path) -> None:
             "ecdf_band_simulations": ECDF_BAND_SIMULATIONS,
             "ecdf_band_seed": ECDF_BAND_SEED,
             "ecdf_band_max_points": ECDF_BAND_MAX_POINTS,
+            "log_gamma": LOG_GAMMA_SETTINGS,
         }
     )
     write_json_atomic(config, config_path)

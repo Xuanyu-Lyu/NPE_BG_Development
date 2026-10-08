@@ -1,6 +1,7 @@
 """Statistical and workflow checks for posterior inspection and noisy PPCs."""
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -115,12 +116,30 @@ class PosteriorChecks(unittest.TestCase):
                 self.assertFalse((output / "cells").exists())
                 self.assertTrue((output / "COMPLETE").exists())
                 self.assertEqual(len(pd.read_csv(output / "posterior_predictive_results.csv")), 16)
+                gamma = pd.read_csv(output / "calibration_log_gamma.csv")
+                self.assertEqual(set(gamma["quantity"]), {"A", "C", "E", "RMSE"})
+                self.assertTrue((gamma["M"] == 4).all())
+                self.assertTrue((gamma["L"] == 40).all())
+                retained_paths = [output / name for name in (
+                    "diagnostic_results.csv", "predictive_rmse_sbc_results.csv",
+                    "posterior_predictive_results.csv",
+                )]
+                retained_bytes = [path.read_bytes() for path in retained_paths]
+                # Simulate a completed pre-log-gamma run: replot must add the
+                # metric from retained ranks without training or new sampling.
+                config_path = output / "config.json"
+                config = json.loads(config_path.read_text())
+                config.pop("log_gamma")
+                config_path.write_text(json.dumps(config))
+                (output / "calibration_log_gamma.csv").unlink()
                 args.inspection_dataset = 1
                 args.n_ppc_replicates = 30
                 diagnostics.replot(args, output)
                 self.assertEqual(args.inspection_dataset, 2)
                 self.assertEqual(args.n_ppc_replicates, 20)
                 self.assertEqual(plot.call_count, 2)
+                pd.testing.assert_frame_equal(gamma, pd.read_csv(output / "calibration_log_gamma.csv"))
+                self.assertEqual(retained_bytes, [path.read_bytes() for path in retained_paths])
             np.testing.assert_array_equal(saved["posterior"], diagnostics.load_selected_samples(output, 100, 100, args)["posterior"])
 
 
