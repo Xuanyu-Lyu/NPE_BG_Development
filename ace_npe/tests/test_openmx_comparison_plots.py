@@ -16,7 +16,7 @@ from openmx_comparison_plots import (
     fixed_n_estimates_long,
     paired_scatter_data,
     plot_paired_scatter,
-    plot_summary_with_boxplots,
+    plot_metric_boxplots,
     valid_metric_values,
 )
 
@@ -70,22 +70,35 @@ class ComparisonPlotChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ground truth"):
             paired_scatter_data(estimates, "NPE-100k", "error")
 
-    def test_summary_uses_median_and_boxes_use_the_test_distribution(self):
+    def test_boxplots_only_with_uncertainty_medians_and_mae_diamonds(self):
         estimates = example_estimates()
         panel = estimates.loc[estimates["N"].eq(50) & estimates["parameter"].eq("A")]
         values = valid_metric_values(panel.loc[panel["method"].eq("OpenMx")], "uncertainty")
         self.assertNotAlmostEqual(values.mean(), np.median(values))
-        def check_plot(figure, *args, **kwargs):
-            heights = [bar.get_height() for bar in figure.axes[0].patches]
-            np.testing.assert_allclose(heights, [0.025, 0.05])
-            self.assertEqual(len(figure.axes), 12)  # two N ranges, summary + boxes
-            self.assertEqual(len(figure.axes[3].patches), 2)
-        with patch("matplotlib.figure.Figure.savefig", autospec=True, side_effect=check_plot):
-            plot_summary_with_boxplots(
-                estimates, ("OpenMx", "NPE-100k"), (50, 20000),
-                {"OpenMx": "blue", "NPE-100k": "orange"},
-                "uncertainty", "Median uncertainty", Path("unused.png"),
-            )
+        for metric in ("uncertainty", "absolute_error"):
+            with self.subTest(metric=metric):
+                def check_plot(figure, *args, **kwargs):
+                    self.assertEqual(len(figure.axes), 6)  # only two N ranges × three parameters
+                    for axis in figure.axes:
+                        self.assertEqual(len(axis.containers), 0)  # no bars or error bars
+                        self.assertEqual(len(axis.patches), 2)
+                    lines = figure.axes[0].lines
+                    diamonds = [line.get_ydata()[0] for line in lines if line.get_marker() == "D"]
+                    if metric == "uncertainty":
+                        medians = [
+                            line.get_ydata()[0] for line in lines
+                            if line.get_color() == "black" and line.get_linestyle() == "-"
+                        ]
+                        np.testing.assert_allclose(medians, [0.025, 0.05])
+                        self.assertEqual(diamonds, [])
+                    else:
+                        np.testing.assert_allclose(diamonds, [0.01, 0.02])
+                with patch("matplotlib.figure.Figure.savefig", autospec=True, side_effect=check_plot):
+                    plot_metric_boxplots(
+                        estimates, ("OpenMx", "NPE-100k"), (50, 20000),
+                        {"OpenMx": "blue", "NPE-100k": "orange"},
+                        metric, "Test distributions", Path("unused.png"),
+                    )
 
     def test_fixed_n_adapter_excludes_unconverged_and_nonfinite_estimates(self):
         wide = pd.DataFrame({

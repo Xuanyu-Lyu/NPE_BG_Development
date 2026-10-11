@@ -31,7 +31,7 @@ from prior_compare.prior_compare_utils import model_dir_for
 from openmx_comparison_plots import (
     fixed_n_estimates_long,
     plot_paired_scatter,
-    plot_summary_with_boxplots,
+    plot_metric_boxplots,
 )
 
 
@@ -703,7 +703,7 @@ def save_performance_plot(
 def save_mae_plot(
     estimates: pd.DataFrame, n_values: tuple[int, ...], path: Path,
 ) -> None:
-    plot_summary_with_boxplots(
+    plot_metric_boxplots(
         estimates, ("OpenMx", "NPE"), n_values, METHOD_COLORS, "absolute_error",
         "Paired Dirichlet MAE and absolute-error distributions: OpenMx versus fixed-N NPE",
         path,
@@ -716,7 +716,7 @@ def save_mean_uncertainty_plot(
     path: Path,
 ) -> None:
     """Compare median uncertainties and distributions; preserve the filename."""
-    plot_summary_with_boxplots(
+    plot_metric_boxplots(
         estimates, ("OpenMx", "NPE"), n_values, METHOD_COLORS, "uncertainty",
         "Median OpenMx SE versus median NPE posterior SD: fixed-N Dirichlet models",
         path,
@@ -1358,8 +1358,8 @@ def main() -> None:
                     "diamonds mark mean bias"
                 ),
                 "mean_bias_plot": "mean signed error with normal-approximation 95% CI",
-                "mean_uncertainty_plot": "median valid OpenMx SE versus NPE SD with test-dataset boxplots (legacy mean filename)",
-                "mae_plot": "mean absolute error with test-dataset absolute-error boxplots",
+                "mean_uncertainty_plot": "boxplots of valid OpenMx SE and NPE SD; black lines mark medians (legacy mean filename)",
+                "mae_plot": "test-dataset absolute-error boxplots; white diamonds mark MAE",
                 "scatter_plots": "SD and signed error per test dataset; OpenMx x, NPE y; panels by N and parameter",
                 "coverage_interval": "95% Wilson score interval across test datasets",
                 "posterior_shape_summary": "box plots across NPE test datasets; Pearson kurtosis",

@@ -71,7 +71,7 @@ def paired_scatter_data(estimates: pd.DataFrame, method: str, metric: str) -> pd
     return paired.loc[valid].reset_index(drop=True)
 
 
-def plot_summary_with_boxplots(
+def plot_metric_boxplots(
     estimates: pd.DataFrame,
     methods: tuple[str, ...],
     n_values: tuple[int, ...],
@@ -80,7 +80,7 @@ def plot_summary_with_boxplots(
     title: str,
     path: Path,
 ) -> None:
-    """Show median SD or MAE above the corresponding test-level distributions."""
+    """Show only test-level boxplots, with medians and optional MAE diamonds."""
     n_ranges = [
         (label, values) for label, values in (
             ("N ≤ 1,000", tuple(n for n in n_values if n <= 1_000)),
@@ -88,23 +88,19 @@ def plot_summary_with_boxplots(
         ) if values
     ]
     uncertainty = metric == "uncertainty"
-    summary_label = "Median uncertainty" if uncertainty else "Mean absolute error"
     distribution_label = "Uncertainty (OpenMx SE / NPE SD)" if uncertainty else "Absolute error |estimate - truth|"
     fig, axes = plt.subplots(
-        2 * len(n_ranges), len(PARAMETERS),
-        figsize=(16, 7.0 * len(n_ranges)), squeeze=False,
+        len(n_ranges), len(PARAMETERS),
+        figsize=(16, 4.3 * len(n_ranges)), squeeze=False,
     )
     width = 0.8 / len(methods)
     offsets = (np.arange(len(methods)) - (len(methods) - 1) / 2) * width
     for range_index, (range_label, range_values) in enumerate(n_ranges):
         base_positions = np.arange(len(range_values))
         for column, parameter in enumerate(PARAMETERS):
-            summary_axis = axes[2 * range_index, column]
-            distribution_axis = axes[2 * range_index + 1, column]
+            distribution_axis = axes[range_index, column]
             for method_index, method in enumerate(methods):
                 distributions = []
-                summaries = []
-                mean_intervals = []
                 for n_value in range_values:
                     group = estimates.loc[
                         estimates["method"].eq(method)
@@ -113,23 +109,8 @@ def plot_summary_with_boxplots(
                     ]
                     values = valid_metric_values(group, metric)
                     distributions.append(values)
-                    summaries.append(
-                        (np.median(values) if uncertainty else values.mean())
-                        if len(values) else np.nan
-                    )
-                    mean_intervals.append(
-                        1.96 * values.std(ddof=1) / np.sqrt(len(values))
-                        if len(values) > 1 else 0.0
-                    )
                 positions = base_positions + offsets[method_index]
                 color = colors[method]
-                summary_axis.bar(
-                    positions, summaries, width=width * 0.88, color=color,
-                    yerr=None if uncertainty else np.vstack((
-                        np.minimum(summaries, mean_intervals), mean_intervals,
-                    )),
-                    capsize=2, error_kw={"elinewidth": 0.8},
-                )
                 boxplot = distribution_axis.boxplot(
                     distributions, positions=positions, widths=width * 0.88,
                     patch_artist=True, manage_ticks=False,
@@ -145,25 +126,21 @@ def plot_summary_with_boxplots(
                     box.set_facecolor(color)
                     box.set_edgecolor(color)
                     box.set_alpha(0.75)
-            for axis, label, panel_label in (
-                (summary_axis, summary_label, "Median" if uncertainty else "MAE"),
-                (distribution_axis, distribution_label, "Distribution"),
-            ):
-                axis.set_title(f"{parameter} — {range_label}: {panel_label}")
-                axis.set_ylabel(label)
-                axis.set_ylim(bottom=0)
-                axis.set_xticks(base_positions, [f"{n:,}" for n in range_values])
-                axis.set_xlabel("Twin-pair sample size N")
-                axis.grid(axis="y", alpha=0.22)
-                axis.set_axisbelow(True)
+            distribution_axis.set_title(f"{parameter} — {range_label}")
+            distribution_axis.set_ylabel(distribution_label)
+            distribution_axis.set_ylim(bottom=0)
+            distribution_axis.set_xticks(base_positions, [f"{n:,}" for n in range_values])
+            distribution_axis.set_xlabel("Twin-pair sample size N")
+            distribution_axis.grid(axis="y", alpha=0.22)
+            distribution_axis.set_axisbelow(True)
     handles = [Patch(facecolor=colors[method], label=method) for method in methods]
     fig.legend(handles=handles, loc="upper center", ncol=len(methods),
-               bbox_to_anchor=(0.5, 0.94), fontsize=9)
+               bbox_to_anchor=(0.5, 0.91), fontsize=9)
     note = "Boxes: IQR; black line: median; whiskers: 1.5 × IQR; dots: outliers."
     if not uncertainty:
-        note += " White diamonds: MAE; bar error bars: normal 95% CI of MAE."
+        note += " White diamonds: MAE."
     fig.suptitle(f"{title}\n{note}", fontsize=12, y=0.995)
-    fig.tight_layout(rect=(0, 0, 1, 0.91))
+    fig.tight_layout(rect=(0, 0, 1, 0.85))
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 

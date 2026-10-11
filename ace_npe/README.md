@@ -278,10 +278,11 @@ the saved OpenMx fits. Reuse checks that the paired-data fingerprint matches.
 The Slurm wrapper forwards any script arguments to the Python comparison.
 
 In both comparisons, `paired_mean_uncertainty_by_n.png` retains its historical
-filename but now shows **median** valid uncertainty, with boxplots of the
-test-dataset values (OpenMx SE and NPE posterior SD). `paired_mae_by_n.png`
-shows MAE plus boxplots of individual absolute errors; their mean is MAE.
-The summary and distribution panels split low and high N to keep their scales
+filename but now shows only boxplots of valid test-dataset uncertainties
+(OpenMx SE and NPE posterior SD), with black lines marking **medians**.
+`paired_mae_by_n.png` shows only boxplots of individual absolute errors;
+white diamonds mark their mean (MAE). Both figures have no summary bars.
+The distribution panels split low and high N to keep their scales
 readable. Valid uncertainties are finite and nonnegative, with finite estimates
 and truth, on the common usable OpenMx fits.
 

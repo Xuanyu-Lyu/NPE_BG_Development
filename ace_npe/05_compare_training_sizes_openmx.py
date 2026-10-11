@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ace_model import ACE_PARAM_NAMES, RESULTS_DIR, resolve
 from openmx_comparison_plots import (
     plot_paired_scatter,
-    plot_summary_with_boxplots,
+    plot_metric_boxplots,
     valid_metric_values,
 )
 
@@ -903,7 +903,7 @@ def save_figures(
         f"{suffix}; diamonds mark mean error (bias)",
         output_dir / "paired_bias_by_n.png",
     )
-    plot_summary_with_boxplots(
+    plot_metric_boxplots(
         estimates,
         methods,
         n_values,
@@ -923,7 +923,7 @@ def save_figures(
         lower_zero=True,
         annotate_n=20_000,
     )
-    plot_summary_with_boxplots(
+    plot_metric_boxplots(
         estimates,
         methods,
         n_values,
@@ -1109,8 +1109,8 @@ def main() -> None:
         "metrics_use_common_openmx_converged_rows": True,
         "openmx_uncertainty": "delta-method standard error",
         "npe_uncertainty": "posterior standard deviation",
-        "uncertainty_plot": "median valid uncertainty with test-dataset boxplots (legacy mean filename)",
-        "mae_plot": "mean absolute error with test-dataset absolute-error boxplots",
+        "uncertainty_plot": "valid uncertainty boxplots; black lines mark medians (legacy mean filename)",
+        "mae_plot": "test-dataset absolute-error boxplots; white diamonds mark MAE",
         "scatter_plots": "one SD and signed-error scatter PNG per K; OpenMx x, NPE y; panels by N and parameter",
         "native_coverage": (
             "OpenMx estimate +/- 1.96 SE; NPE posterior 2.5%-97.5% quantiles"
