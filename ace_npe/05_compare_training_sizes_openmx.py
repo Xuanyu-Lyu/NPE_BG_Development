@@ -31,6 +31,11 @@ from matplotlib.ticker import NullFormatter
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ace_model import ACE_PARAM_NAMES, RESULTS_DIR, resolve
+from openmx_comparison_plots import (
+    plot_paired_scatter,
+    plot_summary_with_boxplots,
+    valid_metric_values,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -380,7 +385,6 @@ def summarize_metrics(
     ):
         errors = group["error"].to_numpy(dtype=float)
         absolute_errors = np.abs(errors)
-        uncertainty = group["uncertainty"].to_numpy(dtype=float)
         interval_group = group.loc[group["interval_valid"]]
         covered = interval_group["covered_95"].to_numpy(dtype=bool)
         mean_sd_group = group.loc[group["mean_sd_interval_valid"]]
@@ -393,7 +397,7 @@ def summarize_metrics(
         bias_se = float(errors.std(ddof=1) / np.sqrt(count))
         mae = float(absolute_errors.mean())
         mae_se = float(absolute_errors.std(ddof=1) / np.sqrt(count))
-        finite_uncertainty = uncertainty[np.isfinite(uncertainty)]
+        finite_uncertainty = valid_metric_values(group, "uncertainty")
         if len(finite_uncertainty) < 2:
             raise RuntimeError(
                 f"Fewer than two finite uncertainty values for "
@@ -430,6 +434,8 @@ def summarize_metrics(
                 "mae_ci_hi": mae + 1.96 * mae_se,
                 "rmse": float(np.sqrt(np.mean(errors**2))),
                 "mean_uncertainty": mean_uncertainty,
+                "median_uncertainty": float(np.median(finite_uncertainty)),
+                "n_uncertainty": len(finite_uncertainty),
                 "uncertainty_mean_ci_lo": max(
                     0.0, mean_uncertainty - 1.96 * uncertainty_se
                 ),
@@ -897,17 +903,14 @@ def save_figures(
         f"{suffix}; diamonds mark mean error (bias)",
         output_dir / "paired_bias_by_n.png",
     )
-    plot_split_grouped_bar_metric(
-        metrics,
+    plot_summary_with_boxplots(
+        estimates,
         methods,
         n_values,
-        "mae",
-        "Mean absolute error",
+        METHOD_COLORS,
+        "absolute_error",
         f"Paired mean absolute error: OpenMx versus NPE training set sizes\n{suffix}",
         output_dir / "paired_mae_by_n.png",
-        interval_columns=("mae_ci_lo", "mae_ci_hi"),
-        lower_zero=True,
-        annotate_ns=(5_000, 20_000),
     )
     plot_line_metric(
         metrics,
@@ -920,18 +923,23 @@ def save_figures(
         lower_zero=True,
         annotate_n=20_000,
     )
-    plot_split_grouped_bar_metric(
-        metrics,
+    plot_summary_with_boxplots(
+        estimates,
         methods,
         n_values,
-        "mean_uncertainty",
-        "Mean uncertainty",
-        f"OpenMx SE versus NPE posterior SD\n{suffix}",
+        METHOD_COLORS,
+        "uncertainty",
+        f"Median OpenMx SE versus median NPE posterior SD\n{suffix}",
         output_dir / "paired_mean_uncertainty_by_n.png",
-        interval_columns=("uncertainty_mean_ci_lo", "uncertainty_mean_ci_hi"),
-        lower_zero=True,
-        annotate_ns=(1_000, 20_000),
     )
+    for k_value in k_values:
+        method = method_for_k(k_value)
+        for metric, label in (("uncertainty", "sd"), ("error", "bias")):
+            plot_paired_scatter(
+                estimates, method, n_values, metric,
+                f"Paired {label.upper() if label == 'sd' else 'signed-error (bias)'} comparison: OpenMx versus {method}",
+                output_dir / f"paired_{label}_scatter_K{k_value}.png",
+            )
     plot_line_metric(
         metrics,
         methods,
@@ -1101,6 +1109,9 @@ def main() -> None:
         "metrics_use_common_openmx_converged_rows": True,
         "openmx_uncertainty": "delta-method standard error",
         "npe_uncertainty": "posterior standard deviation",
+        "uncertainty_plot": "median valid uncertainty with test-dataset boxplots (legacy mean filename)",
+        "mae_plot": "mean absolute error with test-dataset absolute-error boxplots",
+        "scatter_plots": "one SD and signed-error scatter PNG per K; OpenMx x, NPE y; panels by N and parameter",
         "native_coverage": (
             "OpenMx estimate +/- 1.96 SE; NPE posterior 2.5%-97.5% quantiles"
         ),

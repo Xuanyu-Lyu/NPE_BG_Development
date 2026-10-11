@@ -1,6 +1,7 @@
 #!/bin/bash
 # Compare OpenMx with NPE-100k/200k/300k/500k on STEP 03 test datasets.
 # Submit after the STEP 03 aggregation job has completed successfully.
+# To reuse matching saved OpenMx fits: sbatch ace_npe/05_compare_training_sizes_openmx.sh --reuse-openmx
 
 #SBATCH --job-name=ace05-openmx
 #SBATCH --partition=acpu
@@ -25,4 +26,4 @@ python devtools/check_environment.py
 Rscript --version
 export MPLBACKEND=Agg
 
-python -u ace_npe/05_compare_training_sizes_openmx.py
+python -u ace_npe/05_compare_training_sizes_openmx.py "$@"

@@ -270,6 +270,30 @@ Its paired bias, MAE, RMSE, uncertainty, and coverage outputs are saved to
 are OpenMx estimate ± 1.96 SE and NPE posterior 2.5%–97.5% quantiles; an
 additional coverage plot uses estimate ± 1.96 uncertainty for every method.
 
+After Step 03 aggregation is complete, submit Step 05 on RC with
+`sbatch ace_npe/05_compare_training_sizes_openmx.sh`. For a plotting update
+after an earlier successful Step 05 run, use
+`sbatch ace_npe/05_compare_training_sizes_openmx.sh --reuse-openmx` to reuse
+the saved OpenMx fits. Reuse checks that the paired-data fingerprint matches.
+The Slurm wrapper forwards any script arguments to the Python comparison.
+
+In both comparisons, `paired_mean_uncertainty_by_n.png` retains its historical
+filename but now shows **median** valid uncertainty, with boxplots of the
+test-dataset values (OpenMx SE and NPE posterior SD). `paired_mae_by_n.png`
+shows MAE plus boxplots of individual absolute errors; their mean is MAE.
+The summary and distribution panels split low and high N to keep their scales
+readable. Valid uncertainties are finite and nonnegative, with finite estimates
+and truth, on the common usable OpenMx fits.
+
+Step 05 also writes `paired_sd_scatter_K100000.png` and
+`paired_bias_scatter_K100000.png`, with corresponding pairs of PNGs for every
+requested training size. Each point matches the same test dataset: OpenMx on
+x and NPE on y. Panels separate N and ACE parameters; the dashed diagonal is
+`y = x`. The bias scatter shows per-dataset signed error (estimate minus truth).
+SD points require valid uncertainty on both axes; signed-error points require
+finite estimates and truth on both axes. Step 04 writes the same scatter types
+as `paired_sd_scatter.png` and `paired_bias_scatter.png` for its single NPE arm.
+
 Step 04 separately compares saved fixed-N Dirichlet models with OpenMx on
 200 shared parameter conditions at each N. It uses
 `04_fit_openmx_paired_dirichlet.R` and reports both methods on the same rows

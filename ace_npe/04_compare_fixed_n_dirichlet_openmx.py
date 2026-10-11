@@ -28,6 +28,11 @@ from scipy.stats import binom, kurtosis, skew
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ace_model import ACE_PARAM_NAMES, COV_FEATURE_NAMES, MODELS_DIR, RESULTS_DIR, load_posterior, resolve
 from prior_compare.prior_compare_utils import model_dir_for
+from openmx_comparison_plots import (
+    fixed_n_estimates_long,
+    plot_paired_scatter,
+    plot_summary_with_boxplots,
+)
 
 
 DEFAULT_N_PAIRS = (50, 100, 500, 1000, 2000, 5000, 20000)
@@ -310,7 +315,10 @@ def metric_tables(
                         (truth[finite_interval] >= low[finite_interval])
                         & (truth[finite_interval] <= high[finite_interval])
                     )
-                finite_uncertainty = se[np.isfinite(se)]
+                finite_uncertainty = se[
+                    np.isfinite(se) & (se >= 0)
+                    & np.isfinite(estimate) & np.isfinite(truth)
+                ]
                 mean_uncertainty = float(finite_uncertainty.mean())
                 uncertainty_mean_se = float(
                     finite_uncertainty.std(ddof=1)
@@ -343,6 +351,10 @@ def metric_tables(
                             else "posterior standard deviation"
                         ),
                         "mean_uncertainty": mean_uncertainty,
+                        "median_uncertainty": (
+                            float(np.median(finite_uncertainty))
+                            if len(finite_uncertainty) else np.nan
+                        ),
                         "uncertainty_mean_se": uncertainty_mean_se,
                         "uncertainty_mean_ci_lo": max(
                             0.0, mean_uncertainty - 1.96 * uncertainty_mean_se
@@ -688,113 +700,27 @@ def save_performance_plot(
     plt.close(fig)
 
 
-def save_mae_plot(metrics: pd.DataFrame, n_values: tuple[int, ...], path: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8), squeeze=False)
-    last_n = n_values[-1]
-    test_set_size = int(metrics["n_total"].max())
-    for col, parameter in enumerate(ACE_PARAM_NAMES):
-        axis = axes[0, col]
-        at_parameter = metrics.loc[metrics["parameter"] == parameter]
-        for method in ("OpenMx", "NPE"):
-            subset = (
-                at_parameter.loc[at_parameter["method"] == method]
-                .set_index("N_pairs")
-                .reindex(n_values)
-            )
-            color = METHOD_COLORS[method]
-            axis.fill_between(
-                n_values,
-                subset["mae_ci_lo"],
-                subset["mae_ci_hi"],
-                color=color,
-                alpha=0.14,
-            )
-            axis.plot(
-                n_values,
-                subset["mae"],
-                marker="o",
-                color=color,
-                label=method,
-            )
-            last_value = float(subset["mae"].iloc[-1])
-            axis.annotate(
-                f"{last_value:.5f}",
-                xy=(last_n, last_value),
-                xytext=(0, 10 if method == "OpenMx" else -16),
-                textcoords="offset points",
-                ha="right",
-                color=color,
-                fontsize=9,
-            )
-        axis.set_ylim(bottom=0.0)
-        axis.set_title(parameter)
-        axis.set_ylabel("Mean absolute error")
-        configure_n_axis(axis, n_values, xlabel="Twin-pair sample size N")
-    axes[0, 0].legend()
-    fig.suptitle(
-        "Paired Dirichlet mean absolute error: OpenMx versus fixed-N NPE "
-        f"(test set size = {test_set_size:,} per N)"
+def save_mae_plot(
+    estimates: pd.DataFrame, n_values: tuple[int, ...], path: Path,
+) -> None:
+    plot_summary_with_boxplots(
+        estimates, ("OpenMx", "NPE"), n_values, METHOD_COLORS, "absolute_error",
+        "Paired Dirichlet MAE and absolute-error distributions: OpenMx versus fixed-N NPE",
+        path,
     )
-    fig.tight_layout()
-    fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
 
 def save_mean_uncertainty_plot(
-    metrics: pd.DataFrame,
+    estimates: pd.DataFrame,
     n_values: tuple[int, ...],
     path: Path,
 ) -> None:
-    """Compare mean OpenMx SE with mean NPE posterior SD."""
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.8), squeeze=False)
-    last_n = n_values[-1]
-    test_set_size = int(metrics["n_total"].max())
-    for col, parameter in enumerate(ACE_PARAM_NAMES):
-        axis = axes[0, col]
-        at_parameter = metrics.loc[metrics["parameter"] == parameter]
-        for method in ("OpenMx", "NPE"):
-            subset = (
-                at_parameter.loc[at_parameter["method"] == method]
-                .set_index("N_pairs")
-                .reindex(n_values)
-            )
-            color = METHOD_COLORS[method]
-            axis.fill_between(
-                n_values,
-                subset["uncertainty_mean_ci_lo"],
-                subset["uncertainty_mean_ci_hi"],
-                color=color,
-                alpha=0.14,
-            )
-            axis.plot(
-                n_values,
-                subset["mean_uncertainty"],
-                marker="o",
-                color=color,
-                label="OpenMx SE" if method == "OpenMx" else "NPE posterior SD",
-            )
-            last_value = float(subset["mean_uncertainty"].iloc[-1])
-            axis.annotate(
-                f"{last_value:.5f}",
-                xy=(last_n, last_value),
-                xytext=(0, 10 if method == "OpenMx" else -16),
-                textcoords="offset points",
-                ha="right",
-                color=color,
-                fontsize=9,
-            )
-        axis.set_ylim(bottom=0.0)
-        axis.set_title(parameter)
-        axis.set_ylabel("Mean reported uncertainty")
-        configure_n_axis(axis, n_values, xlabel="Twin-pair sample size N")
-    axes[0, 0].legend()
-    fig.suptitle(
-        "OpenMx SE versus NPE posterior SD "
-        f"(test set size = {test_set_size:,} per N)"
+    """Compare median uncertainties and distributions; preserve the filename."""
+    plot_summary_with_boxplots(
+        estimates, ("OpenMx", "NPE"), n_values, METHOD_COLORS, "uncertainty",
+        "Median OpenMx SE versus median NPE posterior SD: fixed-N Dirichlet models",
+        path,
     )
-    fig.tight_layout()
-    fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
 
 def save_coverage_plot(
@@ -1366,11 +1292,18 @@ def main() -> None:
     save_mean_bias_plot(
         metrics, n_values, output_dir / "paired_mean_bias_by_n.png"
     )
-    save_mae_plot(metrics, n_values, output_dir / "paired_mae_by_n.png")
+    estimates_long = fixed_n_estimates_long(merged)
+    save_mae_plot(estimates_long, n_values, output_dir / "paired_mae_by_n.png")
     save_performance_plot(metrics, n_values, output_dir / "paired_performance_by_n.png")
     save_mean_uncertainty_plot(
-        metrics, n_values, output_dir / "paired_mean_uncertainty_by_n.png"
+        estimates_long, n_values, output_dir / "paired_mean_uncertainty_by_n.png"
     )
+    for metric, label in (("uncertainty", "sd"), ("error", "bias")):
+        plot_paired_scatter(
+            estimates_long, "NPE", n_values, metric,
+            f"Paired {label.upper() if label == 'sd' else 'signed-error (bias)'} comparison: OpenMx versus fixed-N NPE",
+            output_dir / f"paired_{label}_scatter.png",
+        )
     save_coverage_plot(metrics, n_values, output_dir / "paired_coverage_by_n.png")
     save_posterior_shape_plot(
         npe,
@@ -1425,7 +1358,9 @@ def main() -> None:
                     "diamonds mark mean bias"
                 ),
                 "mean_bias_plot": "mean signed error with normal-approximation 95% CI",
-                "mean_uncertainty_plot": "OpenMx standard error versus NPE posterior standard deviation",
+                "mean_uncertainty_plot": "median valid OpenMx SE versus NPE SD with test-dataset boxplots (legacy mean filename)",
+                "mae_plot": "mean absolute error with test-dataset absolute-error boxplots",
+                "scatter_plots": "SD and signed error per test dataset; OpenMx x, NPE y; panels by N and parameter",
                 "coverage_interval": "95% Wilson score interval across test datasets",
                 "posterior_shape_summary": "box plots across NPE test datasets; Pearson kurtosis",
             },
