@@ -1361,6 +1361,7 @@ def main() -> None:
                 "mean_uncertainty_plot": "boxplots of valid OpenMx SE and NPE SD; black lines mark medians (legacy mean filename)",
                 "mae_plot": "test-dataset absolute-error boxplots; white diamonds mark MAE",
                 "scatter_plots": "SD and signed error per test dataset; OpenMx x, NPE y; panels by N and parameter",
+                "scatter_colors": "true parameter value in each panel; continuous Viridis scale fixed at 0–1",
                 "coverage_interval": "95% Wilson score interval across test datasets",
                 "posterior_shape_summary": "box plots across NPE test datasets; Pearson kurtosis",
             },

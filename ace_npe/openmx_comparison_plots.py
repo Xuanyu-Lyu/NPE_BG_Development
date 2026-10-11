@@ -5,6 +5,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
 from matplotlib.patches import Patch
 
 
@@ -153,20 +155,25 @@ def plot_paired_scatter(
     title: str,
     path: Path,
 ) -> None:
-    """One test dataset per point, with separate N and ACE parameter panels."""
+    """One test dataset per point, colored by its true parameter on a 0–1 scale."""
     paired = paired_scatter_data(estimates, method, metric)
     uncertainty = metric == "uncertainty"
     fig, axes = plt.subplots(
         len(n_values), len(PARAMETERS), figsize=(14, 3.2 * len(n_values)),
         squeeze=False,
     )
+    truth_norm = Normalize(vmin=0.0, vmax=1.0)
     for row, n_value in enumerate(n_values):
         for column, parameter in enumerate(PARAMETERS):
             axis = axes[row, column]
             group = paired.loc[paired["N"].eq(n_value) & paired["parameter"].eq(parameter)]
             x = group[f"{metric}_openmx"].to_numpy(dtype=float)
             y = group[f"{metric}_npe"].to_numpy(dtype=float)
-            axis.scatter(x, y, s=9, alpha=0.35, edgecolors="none")
+            axis.scatter(
+                x, y, c=group["truth_openmx"].to_numpy(dtype=float),
+                cmap="viridis", norm=truth_norm,
+                s=9, alpha=0.75, edgecolors="none",
+            )
             if len(group):
                 low = 0.0 if uncertainty else min(x.min(), y.min(), 0.0)
                 high = max(x.max(), y.max(), 0.0)
@@ -185,7 +192,16 @@ def plot_paired_scatter(
             axis.set_xlabel("OpenMx SE" if uncertainty else "OpenMx signed error (estimate - truth)")
             axis.set_ylabel(f"{method} posterior SD" if uncertainty else f"{method} signed error (estimate - truth)")
             axis.grid(alpha=0.2)
-    fig.suptitle(f"{title}\nOne point per test dataset; dashed line: y = x", fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 1 - 0.12 / len(n_values)))
+    fig.suptitle(
+        f"{title}\nOne point per test dataset; color: true parameter value; dashed line: y = x",
+        fontsize=12,
+    )
+    fig.tight_layout(rect=(0, 0, 0.91, 1 - 0.12 / len(n_values)))
+    colorbar_axis = fig.add_axes((0.925, 0.22, 0.015, 0.56))
+    colorbar = fig.colorbar(
+        ScalarMappable(norm=truth_norm, cmap="viridis"), cax=colorbar_axis,
+        ticks=np.linspace(0, 1, 6),
+    )
+    colorbar.set_label("True parameter value (A, C, or E in its panel)")
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)

@@ -116,6 +116,29 @@ class ComparisonPlotChecks(unittest.TestCase):
         self.assertEqual(set(output["test_dataset_m"]), {1})
         np.testing.assert_allclose(output.loc[output["method"].eq("OpenMx"), "error"], 0.1)
 
+    def test_scatter_colors_use_each_parameters_truth_and_shared_scale(self):
+        estimates = example_estimates()
+        for column, parameter in enumerate(("A", "C", "E")):
+            selected = estimates["parameter"].eq(parameter)
+            estimates.loc[selected, "truth"] = estimates.loc[selected, "test_dataset_m"] * 0.1 + column * 0.15
+        estimates["estimate"] = estimates["truth"] + estimates["error"]
+        for metric in ("uncertainty", "error"):
+            with self.subTest(metric=metric):
+                def check_plot(figure, *args, **kwargs):
+                    self.assertEqual(len(figure.axes), 7)  # six scatter panels and a shared colorbar
+                    for index, axis in enumerate(figure.axes[:-1]):
+                        points = axis.collections[0]
+                        expected_truth = np.arange(1, 5) * 0.1 + (index % 3) * 0.15
+                        np.testing.assert_allclose(points.get_array(), expected_truth)
+                        self.assertEqual(points.cmap.name, "viridis")
+                        self.assertEqual((points.norm.vmin, points.norm.vmax), (0.0, 1.0))
+                    self.assertIn("True parameter value", figure.axes[-1].get_ylabel())
+                with patch("matplotlib.figure.Figure.savefig", autospec=True, side_effect=check_plot):
+                    plot_paired_scatter(
+                        estimates, "NPE-100k", (50, 20000), metric,
+                        "Paired comparison", Path("unused.png"),
+                    )
+
     def test_scatter_writes_both_types_including_empty_panel(self):
         estimates = example_estimates()
         estimates.loc[estimates["parameter"].eq("E"), "uncertainty"] = np.nan

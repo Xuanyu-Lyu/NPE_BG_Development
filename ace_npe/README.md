@@ -291,6 +291,9 @@ Step 05 also writes `paired_sd_scatter_K100000.png` and
 requested training size. Each point matches the same test dataset: OpenMx on
 x and NPE on y. Panels separate N and ACE parameters; the dashed diagonal is
 `y = x`. The bias scatter shows per-dataset signed error (estimate minus truth).
+Both scatter types color each point by its true A, C, or E value, according to
+the panel, using a continuous Viridis colorbar. The 0–1 color scale is fixed
+across all sample sizes, parameters, and training sizes.
 SD points require valid uncertainty on both axes; signed-error points require
 finite estimates and truth on both axes. Step 04 writes the same scatter types
 as `paired_sd_scatter.png` and `paired_bias_scatter.png` for its single NPE arm.
