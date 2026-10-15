@@ -13,9 +13,11 @@ randomly divided into five blocks of 100. For every ACE parameter it reports:
 * Posterior uncertainty: the posterior variance for every paired model/dataset
   cell (100 estimates per block).
 
-Parallel variance-scale and SE-scale figures are written. These quantities are
-an uncertainty comparison, not an additive variance decomposition. No NPE is
-retrained and no new posterior samples are required.
+Parallel variance-scale and SE-scale figures are written. The SE point figure
+also shows blockwise RMS posterior uncertainty and has a matching block table.
+Separate model-component boxplots show its smaller range by block. These
+quantities are an uncertainty comparison, not an additive variance
+decomposition. No NPE is retrained and no new posterior samples are required.
 """
 
 from __future__ import annotations
@@ -291,6 +293,31 @@ def component_summary(
     return summary
 
 
+def block_se_summary(estimates: pd.DataFrame) -> pd.DataFrame:
+    """Summarize every point group in the SE plot and its block diamond."""
+    summary = (
+        estimates.groupby(["parameter", "block", "component"], observed=True)
+        .agg(
+            n_estimates=("standard_error", "count"),
+            minimum=("standard_error", "min"),
+            maximum=("standard_error", "max"),
+            median=("standard_error", "median"),
+            mean=("standard_error", "mean"),
+            mean_variance=("variance", "mean"),
+        )
+        .reset_index()
+    )
+    summary["diamond_rms_posterior_uncertainty"] = np.where(
+        summary["component"] == "Posterior uncertainty",
+        np.sqrt(summary["mean_variance"]),
+        np.nan,
+    )
+    summary["total_variance"] = np.where(
+        summary["component"] == "Total", summary["mean_variance"], np.nan
+    )
+    return summary.drop(columns="mean_variance")
+
+
 def save_bar_plot(
     summary: pd.DataFrame,
     output_path: Path,
@@ -416,6 +443,7 @@ def save_block_point_plot(
     value_column: str,
     y_label: str,
     title_label: str,
+    block_summary: pd.DataFrame | None = None,
 ) -> None:
     n_blocks = int(point_estimates["block"].nunique())
     non_total_counts = (
@@ -455,6 +483,25 @@ def save_block_point_plot(
                     label=f"Block {block}" if component_index == 0 else None,
                     zorder=4 if is_total else 3,
                 )
+            if block_summary is not None:
+                rms = block_summary.loc[
+                    (block_summary["parameter"] == parameter)
+                    & (block_summary["block"] == block)
+                    & (block_summary["component"] == "Posterior uncertainty"),
+                    "diamond_rms_posterior_uncertainty",
+                ]
+                if len(rms) != 1 or not np.isfinite(rms.iloc[0]):
+                    raise ValueError(f"Missing posterior RMS for {parameter}, block {block}")
+                axis.scatter(
+                    positions[-1] + block_offsets[block_index],
+                    rms.iloc[0],
+                    marker="D",
+                    s=55,
+                    color=color,
+                    edgecolor="black",
+                    linewidth=0.7,
+                    zorder=5,
+                )
         axis.axhline(0, color="0.35", linewidth=0.9)
         axis.set_xticks(positions, COMPONENT_ORDER, rotation=28, ha="right")
         axis.set_title(parameter, color=PARAMETER_COLORS[parameter], fontweight="bold")
@@ -462,12 +509,60 @@ def save_block_point_plot(
         axis.grid(axis="y", alpha=0.22)
         axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     axes[0].legend(frameon=False, fontsize=8)
+    diamond_label = (
+        "Diamonds: Total and posterior RMS per block; "
+        if block_summary is not None
+        else "Diamonds: one Total per block; "
+    )
     fig.suptitle(
         f"Fixed-theta {title_label} by block\n"
-        f"Diamonds: one Total per block; circles: {points_per_component} "
+        f"{diamond_label}circles: {points_per_component} "
         "estimates per block and component"
     )
     fig.tight_layout(rect=(0, 0, 1, 0.90))
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_model_by_block_boxplot(
+    estimates: pd.DataFrame,
+    output_path: Path,
+    value_column: str,
+    y_label: str,
+) -> None:
+    """Show the smaller model component on its own scale, split by block."""
+    selected = estimates.loc[estimates["component"] == "Model"]
+    blocks = sorted(selected["block"].unique())
+    colors = plt.get_cmap("tab20", len(blocks))(np.arange(len(blocks)))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.2), sharey=False)
+    for axis, parameter in zip(axes, ACE_PARAM_NAMES):
+        parameter_rows = selected.loc[selected["parameter"] == parameter]
+        values = [
+            parameter_rows.loc[parameter_rows["block"] == block, value_column]
+            .dropna()
+            .to_numpy(dtype=float)
+            for block in blocks
+        ]
+        boxes = axis.boxplot(
+            values,
+            positions=np.arange(1, len(blocks) + 1),
+            widths=0.55,
+            patch_artist=True,
+            showfliers=True,
+            medianprops={"color": "0.15", "linewidth": 1.5},
+        )
+        for box, color in zip(boxes["boxes"], colors):
+            box.set_facecolor(color)
+            box.set_alpha(0.5)
+            box.set_edgecolor(color)
+        axis.set_xticks(np.arange(1, len(blocks) + 1), [str(block) for block in blocks])
+        axis.set_xlabel("Dataset block")
+        axis.set_ylabel(y_label)
+        axis.set_title(parameter, color=PARAMETER_COLORS[parameter], fontweight="bold")
+        axis.grid(axis="y", alpha=0.22)
+        axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
+    fig.suptitle("Fixed-theta model uncertainty by dataset block")
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
@@ -510,15 +605,18 @@ def main() -> None:
     )
     variance_summary = component_summary(estimates, "variance")
     se_summary = component_summary(estimates, "standard_error")
+    se_block_summary = block_se_summary(estimates)
 
     variance_summary_path = output_dir / "variance_component_summary.csv"
     se_summary_path = output_dir / "se_component_summary.csv"
     estimates_path = output_dir / "component_point_estimates.csv"
     assignments_path = output_dir / "block_pairing_assignments.csv"
+    se_block_summary_path = output_dir / "se_components_by_block.csv"
     variance_summary.to_csv(variance_summary_path, index=False)
     se_summary.to_csv(se_summary_path, index=False)
     estimates.to_csv(estimates_path, index=False)
     assignments.to_csv(assignments_path, index=False)
+    se_block_summary.to_csv(se_block_summary_path, index=False)
 
     # Remove tables from the former additive-decomposition version so a rerun
     # cannot leave obsolete results beside the new uncertainty comparison.
@@ -574,6 +672,15 @@ def main() -> None:
         "standard_error",
         "SE = sqrt(variance)",
         "uncertainty sources on the SE scale",
+        block_summary=se_block_summary,
+    )
+    se_model_boxplot_path = output_dir / "se_model_by_block_boxplot.png"
+    save_model_by_block_boxplot(
+        estimates, se_model_boxplot_path, "standard_error", "Model SE"
+    )
+    variance_model_boxplot_path = output_dir / "variance_model_by_block_boxplot.png"
+    save_model_by_block_boxplot(
+        estimates, variance_model_boxplot_path, "variance", "Model variance"
     )
 
     config = {
@@ -604,6 +711,7 @@ def main() -> None:
             f"Total has {args.n_blocks} estimates, one per block.",
             f"Model, Dataset, and Posterior uncertainty each have {args.n_replicates} estimates per block.",
             "These quantities are an uncertainty comparison and are not additive variance components.",
+            "Posterior RMS diamonds equal sqrt(mean posterior variance) within each block and parameter.",
         ],
     }
     with (output_dir / "config.json").open("w") as handle:
@@ -614,10 +722,13 @@ def main() -> None:
     print(f"Point estimates:  {estimates_path}")
     print(f"Variance summary: {variance_summary_path}")
     print(f"SE summary:       {se_summary_path}")
+    print(f"SE block table:   {se_block_summary_path}")
     print(f"Variance figures: {variance_bar_path}, {variance_boxplot_path}")
     print(f"                  {variance_points_path}")
     print(f"SE figures:       {se_bar_path}, {se_boxplot_path}")
     print(f"                  {se_points_path}")
+    print(f"Model SE boxplot: {se_model_boxplot_path}")
+    print(f"Model variance boxplot: {variance_model_boxplot_path}")
 
 
 if __name__ == "__main__":
