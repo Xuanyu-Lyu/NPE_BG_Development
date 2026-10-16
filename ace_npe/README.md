@@ -354,6 +354,21 @@ sbatch --dependency=afterok:"$aggregate_job" \
 ```
 
 Step 08 writes `results/fixed_theta_npe_ensemble_evaluation/`.
+For a complementary single-NPE comparison, the following array evaluates
+`replicate_001` at N=1000 on 500 independent blocks of 100 fresh fixed-theta
+datasets. Each block gives one B/W point per ACE parameter, where B is the
+sample variance of the 100 posterior means and W is the mean of their 100
+posterior variances. This produces 500 points per panel, using one saved NPE;
+it does not retrain the model. The output is
+`results/fixed_theta_single_npe_blocks/fixed_theta_single_npe_B_W_scatter.png`,
+with exact values in `single_npe_block_B_W.csv`.
+
+```bash
+block_job=$(sbatch --parsable ace_npe/08_single_npe_block_scatter.sh)
+sbatch --dependency=afterok:"$block_job" \
+  ace_npe/08_aggregate_single_npe_block_scatter.sh
+```
+
 Step 09 writes variance-scale and SE-scale comparisons of total, model,
 dataset, and posterior uncertainty to
 `results/fixed_theta_variance_decomposition/`. These quantities are compared;

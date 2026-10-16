@@ -15,6 +15,13 @@ calibration plots plus dataset-level between-NPE uncertainty plots::
 
     python 08_fixed_theta_npe_ensemble.py aggregate
 
+A separate single-NPE experiment uses replicate 1 on 500 independent blocks
+of 100 datasets. One B/W point per block compares the variance of posterior
+means across datasets with the mean posterior variance::
+
+    python 08_fixed_theta_npe_ensemble.py evaluate-block --block 1
+    python 08_fixed_theta_npe_ensemble.py aggregate-blocks
+
 Test covariance statistics are simulated directly from their exact Wishart
 distribution. This is distributionally identical to generating all individual
 Gaussian twin observations and calling ``np.cov(..., ddof=1)``.
@@ -56,6 +63,10 @@ DEFAULT_TEST_SIMULATIONS = 500
 DEFAULT_POSTERIOR_DRAWS = 2_000
 DEFAULT_THETA = (0.4, 0.3, 0.3)
 DEFAULT_SEED = 202_609_16
+DEFAULT_BLOCK_OUTPUT_DIR = "fixed_theta_single_npe_blocks"
+DEFAULT_BLOCK_MODEL_DIR = "fixed_theta_npe_ensemble/replicate_001"
+DEFAULT_BLOCKS = 500
+DEFAULT_DATASETS_PER_BLOCK = 100
 RMS_POSTERIOR_SE_COLUMN = "sqrt(mean(posterior_var))"
 RMS_SE_RATIO_COLUMN = "sqrt(mean(posterior_var))/empirical_SE"
 
@@ -137,10 +148,12 @@ def evaluate_posterior(
     posterior,
     scaler: StandardScaler,
     raw_features: np.ndarray,
+    posterior_seed: int | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Evaluate one NPE and calculate the requested A/C/E coordinates."""
     scaled_features = scaler.transform(raw_features).astype(np.float32)
-    posterior_seed = integer_seed(args.seed, replicate, 5)
+    if posterior_seed is None:
+        posterior_seed = integer_seed(args.seed, replicate, 5)
     torch.manual_seed(posterior_seed)
     rows = []
     for test_index, (raw_row, scaled_row) in enumerate(
@@ -625,6 +638,217 @@ def save_dataset_model_uncertainty_ratio_boxplot(
     plt.close(fig)
 
 
+def evaluate_single_npe_block(args) -> None:
+    """Evaluate one saved NPE on one independent block of fixed-theta datasets."""
+    model_dir = resolve(args.model_dir, RESULTS_DIR)
+    output_root = resolve(args.output_dir, RESULTS_DIR)
+    if model_dir.resolve() == output_root.resolve():
+        raise ValueError("--output_dir must differ from --model_dir")
+    loaded = load_posterior(model_dir)
+    source_config = validate_saved_model(loaded, args.model_replicate, args)
+    output_root.mkdir(parents=True, exist_ok=True)
+    final_dir = output_root / f"block_{args.block:03d}"
+    if (final_dir / "COMPLETE").exists() and not args.force:
+        print(f"Block {args.block} is already complete: {final_dir}")
+        return
+    if final_dir.exists():
+        if not args.force:
+            raise FileExistsError(f"Incomplete block directory: {final_dir}")
+        shutil.rmtree(final_dir)
+
+    work_dir = output_root / f".block_{args.block:03d}.tmp.{os.getpid()}"
+    work_dir.mkdir(parents=False, exist_ok=False)
+    try:
+        test_seed = integer_seed(args.seed, args.block, 11)
+        posterior_seed = integer_seed(args.seed, args.block, 19)
+        theta = np.asarray(args.theta, dtype=np.float64)
+        ace = np.repeat(theta[None, :], args.datasets_per_block, axis=0)
+        features = simulate_covariance_features(
+            ace, args.n_pairs, np.random.default_rng(test_seed)
+        )
+        raw, _ = evaluate_posterior(
+            args,
+            args.model_replicate,
+            loaded["posterior"],
+            loaded["scaler"],
+            features,
+            posterior_seed=posterior_seed,
+        )
+        raw.insert(0, "block", args.block)
+        raw.insert(
+            2,
+            "global_test_simulation",
+            (args.block - 1) * args.datasets_per_block
+            + raw["test_simulation"].to_numpy(dtype=int),
+        )
+        raw.to_csv(work_dir / "fixed_theta_posterior_results.csv", index=False)
+        config = {
+            "experiment": "fixed_theta_single_npe_blocks",
+            "model_dir": str(model_dir),
+            "model_replicate": args.model_replicate,
+            "source_training_simulations_total": source_config.get(
+                "n_training_simulations_total"
+            ),
+            "block": args.block,
+            "n_blocks_planned": args.n_blocks,
+            "datasets_per_block": args.datasets_per_block,
+            "n_pairs": args.n_pairs,
+            "theta": dict(zip(ACE_PARAM_NAMES, args.theta)),
+            "n_posterior_draws": args.n_posterior_draws,
+            "base_seed": args.seed,
+            "test_data_seed": test_seed,
+            "posterior_seed": posterior_seed,
+            "retrained": False,
+        }
+        with (work_dir / "config.json").open("w") as handle:
+            json.dump(config, handle, indent=2)
+        (work_dir / "COMPLETE").write_text("block evaluation complete\n")
+        work_dir.rename(final_dir)
+        print(f"Block {args.block} complete: {final_dir}")
+    except Exception:
+        print(f"Partial files retained in {work_dir}", file=sys.stderr)
+        raise
+
+
+def summarize_single_npe_blocks(
+    raw_results: pd.DataFrame,
+    datasets_per_block: int,
+) -> pd.DataFrame:
+    """One (B, W) pair per block and ACE parameter for a single NPE.
+
+    B is the sample variance of posterior means across datasets; W is the
+    mean posterior variance across those same datasets.
+    """
+    rows = []
+    for block, selected in raw_results.groupby("block", sort=True):
+        if len(selected) != datasets_per_block:
+            raise ValueError(
+                f"Block {block} has {len(selected)} datasets; "
+                f"expected {datasets_per_block}"
+            )
+        for parameter in ACE_PARAM_NAMES:
+            means = selected[f"{parameter}_posterior_mean"].to_numpy(dtype=float)
+            sds = selected[f"{parameter}_posterior_sd"].to_numpy(dtype=float)
+            if not np.isfinite(means).all() or not np.isfinite(sds).all():
+                raise ValueError(f"Non-finite posterior results for {parameter}, block {block}")
+            if np.any(sds <= 0):
+                raise ValueError(f"Non-positive posterior SD for {parameter}, block {block}")
+            between_dataset_variance = float(means.var(ddof=1))
+            within_posterior_variance = float(np.mean(np.square(sds)))
+            rows.append(
+                {
+                    "block": int(block),
+                    "parameter": parameter,
+                    "n_datasets": datasets_per_block,
+                    "B_between_dataset_variance": between_dataset_variance,
+                    "W_mean_posterior_variance": within_posterior_variance,
+                    "sqrt(B)": np.sqrt(between_dataset_variance),
+                    "sqrt(W)": np.sqrt(within_posterior_variance),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def save_single_npe_block_bw_scatter(
+    block_summary: pd.DataFrame,
+    theta: np.ndarray,
+    n_pairs: int,
+    path: Path,
+) -> None:
+    """Plot 500 blockwise between-dataset versus within-posterior variances."""
+    fig, axes = plt.subplots(1, 3, figsize=(15.5, 5.1), squeeze=False)
+    colors = {"A": "tab:blue", "C": "tab:orange", "E": "tab:green"}
+    n_blocks = int(block_summary["block"].nunique())
+    datasets_per_block = int(block_summary["n_datasets"].unique().item())
+    for column, parameter in enumerate(ACE_PARAM_NAMES):
+        axis = axes[0, column]
+        selected = block_summary.loc[block_summary["parameter"] == parameter]
+        if len(selected) != n_blocks:
+            raise ValueError(f"Expected {n_blocks} {parameter} points, got {len(selected)}")
+        x = selected["B_between_dataset_variance"].to_numpy(dtype=float)
+        y = selected["W_mean_posterior_variance"].to_numpy(dtype=float)
+        upper = float(max(x.max(), y.max())) * 1.08
+        if upper <= 0:
+            raise ValueError(f"Non-positive B and W for {parameter}")
+        axis.scatter(
+            x, y, s=22, alpha=0.42, color=colors[parameter],
+            edgecolor="none",
+        )
+        axis.plot([0, upper], [0, upper], "--", color="0.35", linewidth=1.1)
+        axis.set_xlim(0, upper)
+        axis.set_ylim(0, upper)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_title(f"{parameter} (true {theta[column]:g})")
+        axis.set_xlabel("B: variance of posterior means across datasets")
+        axis.set_ylabel("W: mean posterior variance")
+        axis.grid(alpha=0.22)
+    fig.suptitle(
+        f"One NPE at N pairs={n_pairs}: {n_blocks} independent blocks, "
+        f"{datasets_per_block} datasets each\n"
+        "Each point is one block; dashed line: B = W"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def aggregate_single_npe_blocks(args) -> None:
+    """Read completed blocks and create the 500-point B-versus-W figure."""
+    output_root = resolve(args.output_dir, RESULTS_DIR)
+    frames = []
+    for block in range(1, args.n_blocks + 1):
+        block_dir = output_root / f"block_{block:03d}"
+        raw_path = block_dir / "fixed_theta_posterior_results.csv"
+        config_path = block_dir / "config.json"
+        if not (block_dir / "COMPLETE").exists() or not raw_path.exists() or not config_path.exists():
+            raise FileNotFoundError(f"Missing completed block {block}: {block_dir}")
+        with config_path.open() as handle:
+            config = json.load(handle)
+        expected = {
+            "model_dir": str(resolve(args.model_dir, RESULTS_DIR)),
+            "block": block,
+            "n_blocks_planned": args.n_blocks,
+            "datasets_per_block": args.datasets_per_block,
+            "n_pairs": args.n_pairs,
+            "n_posterior_draws": args.n_posterior_draws,
+            "base_seed": args.seed,
+            "model_replicate": args.model_replicate,
+            "theta": dict(zip(ACE_PARAM_NAMES, args.theta)),
+        }
+        for key, value in expected.items():
+            if config.get(key) != value:
+                raise ValueError(f"Block {block} has inconsistent {key}: {config.get(key)}")
+        raw = pd.read_csv(raw_path)
+        required = {
+            "block", "test_simulation", "global_test_simulation",
+            *(f"{parameter}_posterior_mean" for parameter in ACE_PARAM_NAMES),
+            *(f"{parameter}_posterior_sd" for parameter in ACE_PARAM_NAMES),
+        }
+        if missing := required.difference(raw.columns):
+            raise ValueError(f"{raw_path} is missing columns: {sorted(missing)}")
+        expected_local = np.arange(1, args.datasets_per_block + 1)
+        expected_global = (block - 1) * args.datasets_per_block + expected_local
+        raw = raw.sort_values("test_simulation").reset_index(drop=True)
+        if not (raw["block"] == block).all() or not np.array_equal(
+            raw["test_simulation"].to_numpy(), expected_local
+        ) or not np.array_equal(
+            raw["global_test_simulation"].to_numpy(), expected_global
+        ):
+            raise ValueError(f"Block {block} has inconsistent dataset IDs")
+        frames.append(raw)
+    raw_results = pd.concat(frames, ignore_index=True)
+    block_summary = summarize_single_npe_blocks(raw_results, args.datasets_per_block)
+    summary_path = output_root / "single_npe_block_B_W.csv"
+    plot_path = output_root / "fixed_theta_single_npe_B_W_scatter.png"
+    block_summary.to_csv(summary_path, index=False)
+    save_single_npe_block_bw_scatter(
+        block_summary, np.asarray(args.theta, dtype=float), args.n_pairs, plot_path
+    )
+    print(f"Aggregated {args.n_blocks} blocks and {len(raw_results):,} datasets")
+    print(f"Block B/W table: {summary_path}")
+    print(f"Block B/W plot:  {plot_path}")
+
+
 def save_se_ratio_boxplot(
     summary: pd.DataFrame,
     n_pairs: int,
@@ -878,6 +1102,18 @@ def add_common_arguments(
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
 
 
+def add_single_npe_block_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output_dir", default=DEFAULT_BLOCK_OUTPUT_DIR)
+    parser.add_argument("--model_dir", default=DEFAULT_BLOCK_MODEL_DIR)
+    parser.add_argument("--model_replicate", type=int, default=1)
+    parser.add_argument("--n_pairs", type=int, default=DEFAULT_N_PAIRS)
+    parser.add_argument("--theta", type=float, nargs=3, default=list(DEFAULT_THETA))
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--n_blocks", type=int, default=DEFAULT_BLOCKS)
+    parser.add_argument("--datasets_per_block", type=int, default=DEFAULT_DATASETS_PER_BLOCK)
+    parser.add_argument("--n_posterior_draws", type=int, default=DEFAULT_POSTERIOR_DRAWS)
+
+
 def validate_common(parser: argparse.ArgumentParser, args) -> None:
     if args.n_replicates < 1:
         parser.error("--n_replicates must be positive")
@@ -918,13 +1154,39 @@ def parse_args():
     )
     add_common_arguments(aggregate_parser)
 
+    block_parser = subparsers.add_parser(
+        "evaluate-block",
+        help="Evaluate one saved NPE on one block of fresh fixed-theta datasets",
+    )
+    add_single_npe_block_arguments(block_parser)
+    block_parser.add_argument("--block", type=int, required=True)
+    block_parser.add_argument("--force", action="store_true")
+
+    blocks_aggregate_parser = subparsers.add_parser(
+        "aggregate-blocks", help="Plot B versus W for all single-NPE blocks"
+    )
+    add_single_npe_block_arguments(blocks_aggregate_parser)
+
     args = parser.parse_args()
     parser_by_command = {
         "evaluate-one": evaluate_parser,
         "aggregate": aggregate_parser,
+        "evaluate-block": block_parser,
+        "aggregate-blocks": blocks_aggregate_parser,
     }
     selected_parser = parser_by_command[args.command]
-    validate_common(selected_parser, args)
+    if args.command in ("evaluate-one", "aggregate"):
+        validate_common(selected_parser, args)
+    else:
+        theta = np.asarray(args.theta, dtype=float)
+        if args.n_pairs < 3 or np.any(theta <= 0) or not np.isclose(theta.sum(), 1.0):
+            selected_parser.error("N must be at least 3 and theta must be positive and sum to 1")
+        if min(args.n_blocks, args.datasets_per_block, args.n_posterior_draws) < 2:
+            selected_parser.error("blocks, datasets per block, and posterior draws must be at least 2")
+        if args.model_replicate < 1:
+            selected_parser.error("--model_replicate must be positive")
+        if args.command == "evaluate-block" and not 1 <= args.block <= args.n_blocks:
+            selected_parser.error("--block must be between 1 and --n_blocks")
     if args.command == "evaluate-one":
         if not 1 <= args.replicate <= args.n_replicates:
             selected_parser.error(
@@ -939,12 +1201,17 @@ def parse_args():
 
 def main() -> None:
     args = parse_args()
-    if args.command == "evaluate-one":
+    if args.command in ("evaluate-one", "evaluate-block"):
         cpu_count = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
         torch.set_num_threads(max(1, cpu_count))
+    if args.command == "evaluate-one":
         evaluate_one(args)
-    else:
+    elif args.command == "aggregate":
         aggregate(args)
+    elif args.command == "evaluate-block":
+        evaluate_single_npe_block(args)
+    else:
+        aggregate_single_npe_blocks(args)
 
 
 if __name__ == "__main__":
