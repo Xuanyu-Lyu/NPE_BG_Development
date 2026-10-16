@@ -841,26 +841,23 @@ def save_single_npe_block_ratio_boxplot(
             edgecolor="none",
             zorder=3,
         )
-    log_values = np.log10(np.concatenate((all_values, [1.0])))
-    log_span = max(float(log_values.max() - log_values.min()), 0.1)
-    axis.set_yscale("log")
-    axis.set_ylim(
-        10 ** (float(log_values.min()) - 0.10 * log_span),
-        10 ** (float(log_values.max()) + 0.10 * log_span),
-    )
+    lower = min(float(all_values.min()), 1.0)
+    upper = max(float(all_values.max()), 1.0)
+    padding = max(0.05, 0.10 * (upper - lower))
+    axis.set_ylim(max(0.0, lower - padding), upper + padding)
     axis.axhline(1.0, linestyle="--", color="0.35", linewidth=1.2)
     axis.set_xticks(
         range(1, len(ACE_PARAM_NAMES) + 1),
         [f"{parameter}\nmedian = {np.median(values):.3g}"
          for parameter, values in zip(ACE_PARAM_NAMES, values_by_parameter)],
     )
-    axis.set_ylabel("W / B (log scale)")
+    axis.set_ylabel("W / B")
     axis.set_title(
         f"One NPE at N pairs={n_pairs}: posterior variance / "
         f"between-dataset variance\n"
         f"{n_blocks} blocks; each point is one block; dashed line: W/B = 1"
     )
-    axis.grid(axis="y", alpha=0.22, which="both")
+    axis.grid(axis="y", alpha=0.22)
     fig.tight_layout()
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
