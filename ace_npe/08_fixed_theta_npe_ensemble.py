@@ -735,6 +735,8 @@ def summarize_single_npe_blocks(
                 raise ValueError(f"Non-positive posterior SD for {parameter}, block {block}")
             between_dataset_variance = float(means.var(ddof=1))
             within_posterior_variance = float(np.mean(np.square(sds)))
+            if between_dataset_variance <= 0:
+                raise ValueError(f"Non-positive B for {parameter}, block {block}")
             rows.append(
                 {
                     "block": int(block),
@@ -744,6 +746,7 @@ def summarize_single_npe_blocks(
                     "W_mean_posterior_variance": within_posterior_variance,
                     "sqrt(B)": np.sqrt(between_dataset_variance),
                     "sqrt(W)": np.sqrt(within_posterior_variance),
+                    "W_over_B": within_posterior_variance / between_dataset_variance,
                 }
             )
     return pd.DataFrame(rows)
@@ -792,8 +795,79 @@ def save_single_npe_block_bw_scatter(
     plt.close(fig)
 
 
+def save_single_npe_block_ratio_boxplot(
+    block_summary: pd.DataFrame,
+    n_pairs: int,
+    path: Path,
+) -> None:
+    """Show W/B for every block, with one box per ACE parameter."""
+    values_by_parameter = [
+        block_summary.loc[
+            block_summary["parameter"] == parameter, "W_over_B"
+        ].to_numpy(dtype=float)
+        for parameter in ACE_PARAM_NAMES
+    ]
+    n_blocks = int(block_summary["block"].nunique())
+    if any(len(values) != n_blocks for values in values_by_parameter):
+        raise ValueError("Each parameter must have one W/B ratio per block")
+    all_values = np.concatenate(values_by_parameter)
+    if not np.isfinite(all_values).all() or np.any(all_values <= 0):
+        raise ValueError("W/B ratios must be finite and positive")
+
+    fig, axis = plt.subplots(figsize=(8.2, 5.8))
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    boxes = axis.boxplot(
+        values_by_parameter,
+        widths=0.48,
+        patch_artist=True,
+        showfliers=False,
+        medianprops={"color": "0.15", "linewidth": 1.8},
+    )
+    for box, color in zip(boxes["boxes"], colors):
+        box.set_facecolor(color)
+        box.set_alpha(0.28)
+        box.set_edgecolor(color)
+
+    rng = np.random.default_rng(20261016)
+    for position, (values, color) in enumerate(
+        zip(values_by_parameter, colors), start=1
+    ):
+        axis.scatter(
+            position + rng.uniform(-0.13, 0.13, size=len(values)),
+            values,
+            s=22,
+            alpha=0.45,
+            color=color,
+            edgecolor="none",
+            zorder=3,
+        )
+    log_values = np.log10(np.concatenate((all_values, [1.0])))
+    log_span = max(float(log_values.max() - log_values.min()), 0.1)
+    axis.set_yscale("log")
+    axis.set_ylim(
+        10 ** (float(log_values.min()) - 0.10 * log_span),
+        10 ** (float(log_values.max()) + 0.10 * log_span),
+    )
+    axis.axhline(1.0, linestyle="--", color="0.35", linewidth=1.2)
+    axis.set_xticks(
+        range(1, len(ACE_PARAM_NAMES) + 1),
+        [f"{parameter}\nmedian = {np.median(values):.3g}"
+         for parameter, values in zip(ACE_PARAM_NAMES, values_by_parameter)],
+    )
+    axis.set_ylabel("W / B (log scale)")
+    axis.set_title(
+        f"One NPE at N pairs={n_pairs}: posterior variance / "
+        f"between-dataset variance\n"
+        f"{n_blocks} blocks; each point is one block; dashed line: W/B = 1"
+    )
+    axis.grid(axis="y", alpha=0.22, which="both")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def aggregate_single_npe_blocks(args) -> None:
-    """Read completed blocks and create the 500-point B-versus-W figure."""
+    """Read completed blocks and create the B/W scatter and ratio boxplot."""
     output_root = resolve(args.output_dir, RESULTS_DIR)
     frames = []
     for block in range(1, args.n_blocks + 1):
@@ -840,13 +914,16 @@ def aggregate_single_npe_blocks(args) -> None:
     block_summary = summarize_single_npe_blocks(raw_results, args.datasets_per_block)
     summary_path = output_root / "single_npe_block_B_W.csv"
     plot_path = output_root / "fixed_theta_single_npe_B_W_scatter.png"
+    ratio_path = output_root / "fixed_theta_single_npe_W_over_B_boxplot.png"
     block_summary.to_csv(summary_path, index=False)
     save_single_npe_block_bw_scatter(
         block_summary, np.asarray(args.theta, dtype=float), args.n_pairs, plot_path
     )
+    save_single_npe_block_ratio_boxplot(block_summary, args.n_pairs, ratio_path)
     print(f"Aggregated {args.n_blocks} blocks and {len(raw_results):,} datasets")
     print(f"Block B/W table: {summary_path}")
     print(f"Block B/W plot:  {plot_path}")
+    print(f"Block W/B plot:  {ratio_path}")
 
 
 def save_se_ratio_boxplot(

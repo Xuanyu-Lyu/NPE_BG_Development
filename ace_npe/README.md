@@ -361,7 +361,8 @@ sample variance of the 100 posterior means and W is the mean of their 100
 posterior variances. This produces 500 points per panel, using one saved NPE;
 it does not retrain the model. The output is
 `results/fixed_theta_single_npe_blocks/fixed_theta_single_npe_B_W_scatter.png`,
-with exact values in `single_npe_block_B_W.csv`.
+plus `fixed_theta_single_npe_W_over_B_boxplot.png` showing all 500 block ratios
+on a log scale. Exact B, W, and W/B values are in `single_npe_block_B_W.csv`.
 
 ```bash
 block_job=$(sbatch --parsable ace_npe/08_single_npe_block_scatter.sh)
