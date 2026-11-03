@@ -256,6 +256,17 @@ def merge_results(
     openmx: pd.DataFrame,
 ) -> pd.DataFrame:
     keys = ["condition_id", "N_pairs"]
+    required_intervals = {
+        f"{parameter}_openmx_ci_{side}"
+        for parameter in ACE_PARAM_NAMES
+        for side in ("lo", "hi")
+    }
+    missing_intervals = sorted(required_intervals.difference(openmx.columns))
+    if missing_intervals:
+        raise ValueError(
+            "OpenMx estimates lack the current interval columns "
+            f"{missing_intervals}; rerun without --reuse_openmx"
+        )
     if openmx.duplicated(keys).any() or npe.duplicated(keys).any():
         raise ValueError("Estimator results contain duplicate condition/N keys")
     merged = paired.merge(npe, on=keys, how="left", validate="one_to_one")
@@ -301,10 +312,12 @@ def metric_tables(
                 )
                 if method == "OpenMx":
                     se = eligible[f"{parameter}_openmx_se"].to_numpy()
-                    finite_interval = np.isfinite(se)
+                    low = eligible[f"{parameter}_openmx_ci_lo"].to_numpy()
+                    high = eligible[f"{parameter}_openmx_ci_hi"].to_numpy()
+                    finite_interval = np.isfinite(low) & np.isfinite(high)
                     covered = (
-                        (truth[finite_interval] >= estimate[finite_interval] - 1.96 * se[finite_interval])
-                        & (truth[finite_interval] <= estimate[finite_interval] + 1.96 * se[finite_interval])
+                        (truth[finite_interval] >= low[finite_interval])
+                        & (truth[finite_interval] <= high[finite_interval])
                     )
                 else:
                     low = eligible[f"{parameter}_npe_ci_lo"].to_numpy()
@@ -1363,6 +1376,10 @@ def main() -> None:
                 "scatter_plots": "SD and signed error per test dataset; OpenMx x, NPE y; panels by N and parameter",
                 "scatter_colors": "true parameter value in each panel; continuous Viridis scale fixed at 0–1",
                 "coverage_interval": "95% Wilson score interval across test datasets",
+                "openmx_native_interval": (
+                    "Wu-Neale Wald-test-adjusted profile limits for standardized "
+                    "A and C; existing estimate +/- 1.96 SE for E"
+                ),
                 "posterior_shape_summary": "box plots across NPE test datasets; Pearson kurtosis",
             },
             handle,

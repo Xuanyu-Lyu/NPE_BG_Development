@@ -105,6 +105,128 @@ standardized_se <- function(va, vc, ve, vcov_matrix) {
   setNames(sqrt(pmax(diag(covariance), 0)), c("A", "C", "E"))
 }
 
+# Wu & Neale (2012), Section 2.3: the Wald-test-adjusted interval for a
+# standardized A or C component is assembled from likelihood-profile limits.
+# It is an interval adjustment, not a replacement for the Hessian SE above.
+# For covariance input, OpenMx's -2 log likelihood (up to a constant) is
+# n*log|Sigma| + (n-1)*tr(S %*% solve(Sigma)) in each group. Profiling the
+# total variance analytically leaves only one nuisance composition to optimize.
+make_standardized_profile <- function(obs_mz, obs_dz, n_mz, n_dz, parameter) {
+  stopifnot(parameter %in% c("A", "C"))
+  mz_diagonal <- sum(diag(obs_mz))
+  dz_diagonal <- sum(diag(obs_dz))
+  mz_off_diagonal <- obs_mz[1L, 2L]
+  dz_off_diagonal <- obs_dz[1L, 2L]
+  n_total <- n_mz + n_dz
+
+  objective <- function(a, c, e) {
+    mz_correlation <- a + c
+    dz_correlation <- 0.5 * a + c
+    mz_det <- 1 - mz_correlation^2
+    dz_det <- 1 - dz_correlation^2
+    if (e <= 0 || mz_det <= 0 || dz_det <= 0) return(Inf)
+
+    trace_sum <- (n_mz - 1) *
+      (mz_diagonal - 2 * mz_correlation * mz_off_diagonal) / mz_det +
+      (n_dz - 1) *
+      (dz_diagonal - 2 * dz_correlation * dz_off_diagonal) / dz_det
+    total_variance <- max(trace_sum / (2 * n_total), 1e-6 / e)
+    if (!is.finite(total_variance) || total_variance <= 0) return(Inf)
+    2 * n_total * log(total_variance) +
+      n_mz * log(mz_det) + n_dz * log(dz_det) +
+      trace_sum / total_variance
+  }
+
+  function(value) {
+    if (!is.finite(value) || value <= -1 || value >= 1) return(Inf)
+    at_nuisance <- function(ratio) {
+      remainder <- 1 - value
+      if (parameter == "A") {
+        objective(value, remainder * ratio, remainder * (1 - ratio))
+      } else {
+        objective(remainder * ratio, value, remainder * (1 - ratio))
+      }
+    }
+    optimum <- optimize(at_nuisance, c(0, 1 - 1e-10), tol = 1e-9)
+    min(at_nuisance(0), optimum$objective)
+  }
+}
+
+standardized_fit_objective <- function(
+    obs_mz, obs_dz, n_mz, n_dz, va, vc, ve) {
+  total <- va + vc + ve
+  a <- va / total
+  c <- vc / total
+  e <- ve / total
+  mz_corr <- a + c
+  dz_corr <- 0.5 * a + c
+  mz_det <- 1 - mz_corr^2
+  dz_det <- 1 - dz_corr^2
+  trace_sum <- (n_mz - 1) *
+    (sum(diag(obs_mz)) - 2 * mz_corr * obs_mz[1L, 2L]) / mz_det +
+    (n_dz - 1) *
+    (sum(diag(obs_dz)) - 2 * dz_corr * obs_dz[1L, 2L]) / dz_det
+  2 * (n_mz + n_dz) * log(total) +
+    n_mz * log(mz_det) + n_dz * log(dz_det) + trace_sum / total
+}
+
+wald_adjusted_interval <- function(profile, estimate, fitted_objective) {
+  if (!is.finite(estimate) || estimate < 0 || estimate >= 1) {
+    stop("Invalid standardized estimate for boundary-adjusted interval")
+  }
+  # OpenMx can return a tiny positive value for a component at its zero bound.
+  at_boundary <- estimate <= 1e-10
+  profile_estimate <- if (at_boundary) 0 else estimate
+  at_estimate <- profile(profile_estimate)
+  if (!is.finite(at_estimate) ||
+      abs(at_estimate - fitted_objective) > 1e-2) {
+    stop("Profile likelihood does not agree with the OpenMx optimum")
+  }
+  baseline <- min(at_estimate, fitted_objective)
+  cutoff_95 <- qchisq(0.95, df = 1L)
+  cutoff_90 <- qchisq(0.90, df = 1L)
+  difference <- function(value) profile(value) - baseline
+  upper_cutoff <- cutoff_95
+  if (at_boundary) {
+    # Equation (11): include the distance between the unrestricted optimum
+    # and the constrained boundary fit when the latter is at zero.
+    unrestricted <- optimize(profile, c(-1 + 1e-8, 0), tol = 1e-8)
+    unrestricted_objective <- min(profile(0), unrestricted$objective)
+    gap <- max(0, baseline - unrestricted_objective)
+    upper_cutoff <- (sqrt(gap) + sqrt(cutoff_95))^2 - gap
+  }
+  upper_endpoint <- 1 - 1e-10
+  if (!is.finite(difference(upper_endpoint)) ||
+      difference(upper_endpoint) < upper_cutoff) {
+    stop("Could not bracket the upper profile limit")
+  }
+  upper <- uniroot(
+    function(value) difference(value) - upper_cutoff,
+    c(profile_estimate, upper_endpoint), tol = 1e-9
+  )$root
+  if (at_boundary) return(c(lower = 0, upper = upper))
+
+  boundary_distance <- difference(0)
+  lower_limit <- function(cutoff) {
+    if (boundary_distance <= cutoff) return(0)
+    uniroot(
+      function(value) difference(value) - cutoff,
+      c(0, estimate), tol = 1e-9
+    )$root
+  }
+  lower_95 <- lower_limit(cutoff_95)
+  lower_90 <- lower_limit(cutoff_90)
+  midpoint <- lower_limit(boundary_distance / 4)
+  lower <- if (midpoint <= lower_95) {
+    lower_95
+  } else if (midpoint <= lower_90) {
+    midpoint
+  } else {
+    lower_90
+  }
+  c(lower = lower, upper = upper)
+}
+
 status_code_for <- function(fit) {
   code <- tryCatch(fit$output$status$code, error = function(e) NULL)
   if (is.null(code) || length(code) != 1L) {
@@ -148,6 +270,36 @@ fit_one <- function(i) {
     estimates <- c(A = va / total, C = vc / total, E = ve / total)
     ses <- standardized_se(va, vc, ve, fit$output$vcov)
     code <- status_code_for(fit)
+    intervals <- matrix(
+      NA_real_, nrow = 3L, ncol = 2L,
+      dimnames = list(c("A", "C", "E"), c("lower", "upper"))
+    )
+    interval_errors <- character(0)
+    if (isTRUE(code == 0L)) {
+      fitted_objective <- standardized_fit_objective(
+        observed_mz, observed_dz, n_pairs, n_pairs, va, vc, ve
+      )
+      for (parameter in c("A", "C")) {
+        interval <- tryCatch({
+          profile <- make_standardized_profile(
+            observed_mz, observed_dz, n_pairs, n_pairs, parameter
+          )
+          wald_adjusted_interval(
+            profile, estimates[[parameter]], fitted_objective
+          )
+        }, error = function(error) {
+          interval_errors <<- c(
+            interval_errors, paste(parameter, conditionMessage(error), sep = ": ")
+          )
+          c(lower = NA_real_, upper = NA_real_)
+        })
+        intervals[parameter, ] <- interval
+      }
+    }
+    intervals["E", ] <- c(
+      estimates[["E"]] - 1.96 * ses[["E"]],
+      estimates[["E"]] + 1.96 * ses[["E"]]
+    )
 
     data.frame(
       condition_id = row$condition_id,
@@ -158,6 +310,13 @@ fit_one <- function(i) {
       A_openmx_se = ses[["A"]],
       C_openmx_se = ses[["C"]],
       E_openmx_se = ses[["E"]],
+      A_openmx_ci_lo = intervals["A", "lower"],
+      A_openmx_ci_hi = intervals["A", "upper"],
+      C_openmx_ci_lo = intervals["C", "lower"],
+      C_openmx_ci_hi = intervals["C", "upper"],
+      E_openmx_ci_lo = intervals["E", "lower"],
+      E_openmx_ci_hi = intervals["E", "upper"],
+      openmx_ci_error = paste(interval_errors, collapse = "; "),
       openmx_converged = as.integer(isTRUE(code == 0L)),
       openmx_status_code = code,
       openmx_error = "",
@@ -169,6 +328,10 @@ fit_one <- function(i) {
       N_pairs = n_pairs,
       A_openmx_est = NA_real_, C_openmx_est = NA_real_, E_openmx_est = NA_real_,
       A_openmx_se = NA_real_, C_openmx_se = NA_real_, E_openmx_se = NA_real_,
+      A_openmx_ci_lo = NA_real_, A_openmx_ci_hi = NA_real_,
+      C_openmx_ci_lo = NA_real_, C_openmx_ci_hi = NA_real_,
+      E_openmx_ci_lo = NA_real_, E_openmx_ci_hi = NA_real_,
+      openmx_ci_error = conditionMessage(error),
       openmx_converged = 0L,
       openmx_status_code = NA_integer_,
       openmx_error = conditionMessage(error),

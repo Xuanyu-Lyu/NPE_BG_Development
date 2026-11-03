@@ -266,6 +266,17 @@ def build_paired_estimates(
     k_values: tuple[int, ...],
 ) -> pd.DataFrame:
     keys = ["condition_id", "N_pairs"]
+    required_intervals = {
+        f"{parameter}_openmx_ci_{side}"
+        for parameter in ACE_PARAM_NAMES
+        for side in ("lo", "hi")
+    }
+    missing_intervals = sorted(required_intervals.difference(openmx.columns))
+    if missing_intervals:
+        raise ValueError(
+            "OpenMx estimates lack the current interval columns "
+            f"{missing_intervals}; rerun without --reuse-openmx"
+        )
     if openmx.duplicated(keys).any():
         raise ValueError("OpenMx output contains duplicate condition/N rows")
     base = paired.merge(openmx, on=keys, how="left", validate="one_to_one")
@@ -291,8 +302,8 @@ def build_paired_estimates(
             truth = eligible[f"{parameter}_true"].to_numpy(dtype=float)
             estimate = eligible[f"{parameter}_openmx_est"].to_numpy(dtype=float)
             uncertainty = eligible[f"{parameter}_openmx_se"].to_numpy(dtype=float)
-            lower = estimate - 1.96 * uncertainty
-            upper = estimate + 1.96 * uncertainty
+            lower = eligible[f"{parameter}_openmx_ci_lo"].to_numpy(dtype=float)
+            upper = eligible[f"{parameter}_openmx_ci_hi"].to_numpy(dtype=float)
             frames.append(
                 pd.DataFrame(
                     {
@@ -1114,7 +1125,8 @@ def main() -> None:
         "scatter_plots": "one SD and signed-error scatter PNG per K; OpenMx x, NPE y; panels by N and parameter",
         "scatter_colors": "true parameter value in each panel; continuous Viridis scale fixed at 0–1",
         "native_coverage": (
-            "OpenMx estimate +/- 1.96 SE; NPE posterior 2.5%-97.5% quantiles"
+            "OpenMx Wu-Neale Wald-test-adjusted profile limits for A/C and "
+            "estimate +/- 1.96 SE for E; NPE posterior 2.5%-97.5% quantiles"
         ),
         "symmetric_coverage": (
             "estimate +/- 1.96 uncertainty for every method"
