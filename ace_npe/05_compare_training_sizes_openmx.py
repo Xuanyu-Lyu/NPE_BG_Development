@@ -35,6 +35,7 @@ from openmx_comparison_plots import (
     plot_paired_scatter,
     plot_metric_boxplots,
     valid_metric_values,
+    with_interval_width,
 )
 
 
@@ -381,6 +382,7 @@ def build_paired_estimates(
         & (output["truth"] >= output["mean_sd_ci_lower"])
         & (output["truth"] <= output["mean_sd_ci_upper"])
     )
+    output = with_interval_width(output)
     return output.sort_values(
         ["N", "parameter", "method", "test_dataset_m"]
     ).reset_index(drop=True)
@@ -895,6 +897,33 @@ def plot_split_uncertainty_exceedance_counts(
     plt.close(fig)
 
 
+def save_interval_width_figures(
+    estimates: pd.DataFrame,
+    k_values: tuple[int, ...],
+    n_values: tuple[int, ...],
+    n_test_datasets: int,
+    output_dir: Path,
+) -> None:
+    methods = ("OpenMx",) + tuple(method_for_k(value) for value in k_values)
+    suffix = f"(M={n_test_datasets:,} test datasets per N; paired on usable OpenMx fits)"
+    plot_metric_boxplots(
+        estimates,
+        methods,
+        n_values,
+        METHOD_COLORS,
+        "interval_width",
+        f"95% interval widths: OpenMx A/C adjusted, E Wald; NPE quantiles\n{suffix}",
+        output_dir / "paired_interval_width_by_n.png",
+    )
+    for k_value in k_values:
+        method = method_for_k(k_value)
+        plot_paired_scatter(
+            estimates, method, n_values, "interval_width",
+            f"Paired 95% interval widths: OpenMx A/C adjusted, E Wald; {method} quantiles",
+            output_dir / f"paired_interval_width_scatter_K{k_value}.png",
+        )
+
+
 def save_figures(
     metrics: pd.DataFrame,
     estimates: pd.DataFrame,
@@ -942,6 +971,9 @@ def save_figures(
         "uncertainty",
         f"Median OpenMx SE versus median NPE posterior SD\n{suffix}",
         output_dir / "paired_mean_uncertainty_by_n.png",
+    )
+    save_interval_width_figures(
+        estimates, k_values, n_values, n_test_datasets, output_dir
     )
     for k_value in k_values:
         method = method_for_k(k_value)
@@ -1014,6 +1046,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reuse prior OpenMx fits only if the paired-data fingerprint matches",
     )
+    parser.add_argument(
+        "--replot-interval-width",
+        action="store_true",
+        help="Make only the interval-width figures from completed Step 05 CSVs",
+    )
     args = parser.parse_args()
     args.k_values = tuple(dict.fromkeys(int(value) for value in args.k_values))
     if any(value <= 0 for value in args.k_values):
@@ -1028,10 +1065,36 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def replot_interval_width(output_dir: Path) -> None:
+    config_path = output_dir / "config.json"
+    estimates_path = output_dir / "paired_estimates_long.csv"
+    complete_path = output_dir / "COMPLETE"
+    missing = [
+        path.name for path in (config_path, estimates_path, complete_path)
+        if not path.exists()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            f"Cannot replot interval widths in {output_dir}; missing {missing}"
+        )
+    with open(config_path) as handle:
+        config = json.load(handle)
+    estimates = with_interval_width(pd.read_csv(estimates_path))
+    k_values = tuple(int(value) for value in config["K_values"])
+    n_values = tuple(int(value) for value in config["N_values"])
+    save_interval_width_figures(
+        estimates, k_values, n_values, int(config["M"]), output_dir
+    )
+    print(f"Saved interval-width figures -> {output_dir}")
+
+
 def main() -> None:
     args = parse_args()
-    grid_dir = resolve(args.training_grid_dir, RESULTS_DIR)
     output_dir = resolve(args.output_dir, RESULTS_DIR)
+    if args.replot_interval_width:
+        replot_interval_width(output_dir)
+        return
+    grid_dir = resolve(args.training_grid_dir, RESULTS_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "COMPLETE").unlink(missing_ok=True)
 
@@ -1127,6 +1190,10 @@ def main() -> None:
         "native_coverage": (
             "OpenMx Wu-Neale Wald-test-adjusted profile limits for A/C and "
             "estimate +/- 1.96 SE for E; NPE posterior 2.5%-97.5% quantiles"
+        ),
+        "interval_width_plots": (
+            "widths of native 95% intervals; OpenMx A/C adjusted, E Wald; "
+            "NPE posterior quantiles"
         ),
         "symmetric_coverage": (
             "estimate +/- 1.96 uncertainty for every method"

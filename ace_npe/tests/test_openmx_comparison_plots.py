@@ -18,6 +18,7 @@ from openmx_comparison_plots import (
     plot_paired_scatter,
     plot_metric_boxplots,
     valid_metric_values,
+    with_interval_width,
 )
 
 
@@ -33,9 +34,11 @@ def example_estimates():
                         "parameter": parameter, "method": method,
                         "truth": 0.3, "estimate": 0.3 + error,
                         "uncertainty": sd * scale,
+                        "ci_lower": 0.3 + error - sd * scale,
+                        "ci_upper": 0.3 + error + sd * scale,
                         "error": error, "absolute_error": abs(error),
                     })
-    return pd.DataFrame(rows)
+    return with_interval_width(pd.DataFrame(rows))
 
 
 class ComparisonPlotChecks(unittest.TestCase):
@@ -109,12 +112,30 @@ class ComparisonPlotChecks(unittest.TestCase):
             wide[f"{parameter}_true"] = 0.3
             wide[f"{parameter}_openmx_est"] = [0.4, 0.5, np.nan]
             wide[f"{parameter}_openmx_se"] = 0.1
+            wide[f"{parameter}_openmx_ci_lo"] = 0.2
+            wide[f"{parameter}_openmx_ci_hi"] = 0.5
             wide[f"{parameter}_npe_mean"] = 0.35
             wide[f"{parameter}_npe_sd"] = 0.08
+            wide[f"{parameter}_npe_ci_lo"] = 0.25
+            wide[f"{parameter}_npe_ci_hi"] = 0.45
         output = fixed_n_estimates_long(wide)
         self.assertEqual(len(output), 6)
         self.assertEqual(set(output["test_dataset_m"]), {1})
         np.testing.assert_allclose(output.loc[output["method"].eq("OpenMx"), "error"], 0.1)
+        np.testing.assert_allclose(output.loc[output["method"].eq("OpenMx"), "interval_width"], 0.3)
+        np.testing.assert_allclose(output.loc[output["method"].eq("NPE"), "interval_width"], 0.2)
+
+    def test_interval_width_uses_native_limits_and_pairs_by_dataset(self):
+        estimates = example_estimates()
+        paired = paired_scatter_data(estimates, "NPE-100k", "interval_width")
+        self.assertEqual(len(paired), 24)
+        np.testing.assert_allclose(
+            paired["interval_width_npe"], 2 * paired["interval_width_openmx"]
+        )
+        bad = estimates["test_dataset_m"].eq(1) & estimates["method"].eq("OpenMx")
+        estimates.loc[bad, "interval_width"] = -0.1
+        paired = paired_scatter_data(estimates, "NPE-100k", "interval_width")
+        self.assertEqual(len(paired), 18)
 
     def test_scatter_colors_use_each_parameters_truth_and_shared_scale(self):
         estimates = example_estimates()
@@ -122,7 +143,7 @@ class ComparisonPlotChecks(unittest.TestCase):
             selected = estimates["parameter"].eq(parameter)
             estimates.loc[selected, "truth"] = estimates.loc[selected, "test_dataset_m"] * 0.1 + column * 0.15
         estimates["estimate"] = estimates["truth"] + estimates["error"]
-        for metric in ("uncertainty", "error"):
+        for metric in ("uncertainty", "interval_width", "error"):
             with self.subTest(metric=metric):
                 def check_plot(figure, *args, **kwargs):
                     self.assertEqual(len(figure.axes), 7)  # six scatter panels and a shared colorbar
@@ -143,7 +164,7 @@ class ComparisonPlotChecks(unittest.TestCase):
         estimates = example_estimates()
         estimates.loc[estimates["parameter"].eq("E"), "uncertainty"] = np.nan
         with tempfile.TemporaryDirectory() as directory:
-            for metric in ("uncertainty", "error"):
+            for metric in ("uncertainty", "interval_width", "error"):
                 path = Path(directory) / f"{metric}.png"
                 plot_paired_scatter(estimates, "NPE-100k", (50,), metric, "Paired comparison", path)
                 self.assertGreater(path.stat().st_size, 1000)

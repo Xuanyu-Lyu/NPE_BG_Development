@@ -736,6 +736,24 @@ def save_mean_uncertainty_plot(
     )
 
 
+def save_interval_width_plots(
+    estimates: pd.DataFrame,
+    n_values: tuple[int, ...],
+    output_dir: Path,
+) -> None:
+    plot_metric_boxplots(
+        estimates, ("OpenMx", "NPE"), n_values, METHOD_COLORS,
+        "interval_width",
+        "95% interval widths: OpenMx A/C adjusted, E Wald; NPE quantiles",
+        output_dir / "paired_interval_width_by_n.png",
+    )
+    plot_paired_scatter(
+        estimates, "NPE", n_values, "interval_width",
+        "Paired 95% interval widths: OpenMx A/C adjusted, E Wald; NPE quantiles",
+        output_dir / "paired_interval_width_scatter.png",
+    )
+
+
 def save_coverage_plot(
     metrics: pd.DataFrame,
     n_values: tuple[int, ...],
@@ -1204,6 +1222,10 @@ def main() -> None:
         "--reuse_openmx", action="store_true",
         help="Reuse openmx_estimates.csv instead of refitting OpenMx",
     )
+    parser.add_argument(
+        "--replot_interval_width", action="store_true",
+        help="Make only interval-width figures from a saved paired_estimates.csv",
+    )
     args = parser.parse_args()
 
     if args.n_conditions < 2:
@@ -1240,6 +1262,16 @@ def main() -> None:
     bias_norms_path = output_dir / "paired_bias_vector_norm.csv"
     posterior_shape_path = output_dir / "npe_posterior_shape_summary.csv"
     config_path = output_dir / "config.json"
+
+    if args.replot_interval_width:
+        if not merged_path.exists():
+            raise FileNotFoundError(f"Cannot replot without {merged_path}")
+        merged = pd.read_csv(merged_path)
+        estimates_long = fixed_n_estimates_long(merged)
+        saved_n_values = tuple(sorted(merged["N_pairs"].unique().astype(int)))
+        save_interval_width_plots(estimates_long, saved_n_values, output_dir)
+        print(f"Saved interval-width figures -> {output_dir}")
+        return
 
     validate_models(models_dir, n_values)
     if args.reuse_data:
@@ -1311,6 +1343,7 @@ def main() -> None:
     save_mean_uncertainty_plot(
         estimates_long, n_values, output_dir / "paired_mean_uncertainty_by_n.png"
     )
+    save_interval_width_plots(estimates_long, n_values, output_dir)
     for metric, label in (("uncertainty", "sd"), ("error", "bias")):
         plot_paired_scatter(
             estimates_long, "NPE", n_values, metric,
@@ -1379,6 +1412,10 @@ def main() -> None:
                 "openmx_native_interval": (
                     "Wu-Neale Wald-test-adjusted profile limits for standardized "
                     "A and C; existing estimate +/- 1.96 SE for E"
+                ),
+                "interval_width_plots": (
+                    "widths of native 95% intervals; OpenMx A/C adjusted, "
+                    "E Wald; NPE posterior quantiles"
                 ),
                 "posterior_shape_summary": "box plots across NPE test datasets; Pearson kurtosis",
             },

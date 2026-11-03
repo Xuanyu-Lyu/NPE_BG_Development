@@ -280,6 +280,21 @@ plotting updates after a successful adjusted-interval run, use
 `sbatch ace_npe/05_compare_training_sizes_openmx.sh --reuse-openmx` to reuse
 the saved OpenMx fits. Reuse checks that the paired-data fingerprint matches.
 The Slurm wrapper forwards any script arguments to the Python comparison.
+After a successful Step 05 run, add the interval-width figures without
+refitting OpenMx or reevaluating NPE:
+
+```bash
+sbatch ace_npe/05_compare_training_sizes_openmx.sh \
+  --output-dir training_set_size_openmx_comparison_adjusted_ci \
+  --replot-interval-width
+```
+
+This reads `paired_estimates_long.csv` and writes
+`paired_interval_width_by_n.png` plus one
+`paired_interval_width_scatter_K*.png` per requested training size. The width is
+the upper minus lower limit of each method's native 95% interval. OpenMx A/C
+use the adjusted intervals; OpenMx E retains its Wald interval. The existing
+SE/SD plots remain separate.
 
 In both comparisons, `paired_mean_uncertainty_by_n.png` retains its historical
 filename but now shows only boxplots of valid test-dataset uncertainties
@@ -326,6 +341,11 @@ python ace_npe/prior_compare/03_train_prior_models.py --schemes dirichlet \
 python ace_npe/04_compare_fixed_n_dirichlet_openmx.py \
   --models_dir fixed_n_dirichlet_100k
 ```
+
+Step 04 also writes `paired_interval_width_by_n.png` and
+`paired_interval_width_scatter.png`. For a completed Step 04 output with the new
+OpenMx interval columns, use `--replot_interval_width --output_dir NAME` to
+make only those two figures from its saved `paired_estimates.csv`.
 
 ## Steps 07–10: fixed-theta uncertainty and grid reference
 

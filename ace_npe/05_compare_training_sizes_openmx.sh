@@ -2,6 +2,7 @@
 # Compare OpenMx with NPE-100k/200k/300k/500k on STEP 03 test datasets.
 # Submit after the STEP 03 aggregation job has completed successfully.
 # To reuse matching saved OpenMx fits: sbatch ace_npe/05_compare_training_sizes_openmx.sh --reuse-openmx
+# To make new interval-width plots from a completed comparison: add --replot-interval-width
 
 #SBATCH --job-name=ace05-openmx
 #SBATCH --partition=acpu
