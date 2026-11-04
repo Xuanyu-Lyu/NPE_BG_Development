@@ -49,6 +49,7 @@ The standardized covariance summaries enter the flow directly through
 | 08 | `08_fixed_theta_npe_ensemble.py` | Evaluate the saved 100-model fixed-theta ensemble |
 | 09 | `09_decompose_fixed_theta_variance.py` | Compare total, model, dataset, and posterior uncertainty |
 | 10 | `10_compare_fixed_theta_npe_grid.R` | Compare the Step 08 NPE estimates with a Bayesian grid posterior |
+| 11 | `11_compare_ae_ace_ppc.py` | Compare AE and ACE NPE predictive fit on two fixed observations |
 
 Steps 03 and 06 train transient models independently and require no saved
 models from Step 02. Step 05 uses Step 03's compact results and regenerates its
@@ -400,6 +401,34 @@ dataset, and posterior uncertainty to
 they are not an additive decomposition. Step 10 uses the matching Dirichlet
 prior and the analytic ACE covariance likelihood to form a numerical grid
 posterior, writing `results/fixed_theta_npe_grid_comparison/`.
+
+## Step 11: AE versus ACE predictive fit on RC
+
+Step 11 trains two fixed-N NPEs independently with K=200,000 simulations and
+N=1,000 twin pairs in **each** zygosity group. ACE uses the Dirichlet(1,1,1)
+prior and two log-ratio coordinates. AE uses A~Beta(1,1), C=0, E=1-A, and
+one log-ratio coordinate. Both use the four covariance summaries, the Step
+03/06 NPE training settings, and the same observation simulator. Each model
+is applied to the *same* two seeded observed datasets generated at
+(A,C,E)=(0.3,0.3,0.4) and (0.6,0,0.4).
+
+Submit the model array and dependent plotting job from the repository root:
+
+```bash
+fit_job=$(sbatch --parsable ace_npe/11_compare_ae_ace_ppc.sh)
+sbatch --dependency=afterok:"$fit_job" ace_npe/11_plot_ae_ace_ppc.sh
+```
+
+The output is `ace_npe/results/step11_ae_ace_ppc/`. It retains each fitted
+posterior, its feature scaler, its configuration, posterior draws, and PPC
+replicates. `figures/ppc_ace_truth.png` and `figures/ppc_ae_truth.png` each
+show AE in the upper row and ACE in the lower row, with the four existing
+summary histograms and a joint MZ/DZ covariance view. A separate
+`figures/shared_environment_contrast.png` compares predictive distributions
+of T_C = DZ covariance - 0.5 × MZ covariance for the two datasets. Its
+population expectation is C/2. The two CSV tables retain the numerical PPC
+and T_C summaries. These are descriptive fit checks for two single simulated
+observations, not a calibrated model-selection test.
 
 ## Shared utilities and verification
 

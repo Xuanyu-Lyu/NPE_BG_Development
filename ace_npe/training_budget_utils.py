@@ -79,9 +79,10 @@ def simulate_summaries_given_ace(
     ace = np.asarray(ace, dtype=np.float64)
     if ace.ndim != 2 or ace.shape[1] != 3 or len(ace) == 0:
         raise ValueError("ace must have shape (n_replicates, 3)")
-    if (not np.isfinite(ace).all() or np.any(ace <= 0)
+    if (not np.isfinite(ace).all() or np.any(ace < 0)
+            or np.any(ace[:, 2] <= 0)
             or not np.allclose(ace.sum(axis=1), 1.0, rtol=0, atol=1e-6)):
-        raise ValueError("ace must contain positive, finite simplex vectors")
+        raise ValueError("ace must contain finite simplex vectors with E > 0")
     # Remove float32 roundoff in the sum without changing covariance units.
     ace = ace / ace.sum(axis=1, keepdims=True)
     mz = _wishart_compound_symmetric_summaries(
