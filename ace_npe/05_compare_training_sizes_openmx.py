@@ -42,6 +42,7 @@ from openmx_comparison_plots import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 STEP_03 = runpy.run_path(str(SCRIPT_DIR / "03_training_budget_grid.py"))
 DEFAULT_K_VALUES = (100_000, 200_000, 300_000, 500_000)
+OPENMX_MODEL = "fixed_total_variance_1"
 METHOD_COLORS = {
     "OpenMx": "#1f4e79",
     "NPE-100k": "#e68613",
@@ -1120,6 +1121,10 @@ def main() -> None:
             raise ValueError(
                 "Paired test data changed; rerun without --reuse-openmx"
             )
+        if previous_config.get("openmx_model") != OPENMX_MODEL:
+            raise ValueError(
+                "Saved OpenMx fits use an earlier model; rerun without --reuse-openmx"
+            )
     else:
         run_openmx(
             args.rscript,
@@ -1129,6 +1134,11 @@ def main() -> None:
         )
 
     openmx = pd.read_csv(openmx_path)
+    if (
+        "openmx_model" not in openmx.columns
+        or not openmx["openmx_model"].eq(OPENMX_MODEL).all()
+    ):
+        raise ValueError("OpenMx output is not from the fixed-total-variance model")
     estimates = build_paired_estimates(
         paired, openmx, summaries, args.k_values
     )
@@ -1187,6 +1197,8 @@ def main() -> None:
         "npe_models_retrained": False,
         "uncertainty_exceedance_multipliers": list(UNCERTAINTY_MULTIPLIERS),
         "paired_data_sha256": paired_fingerprint,
+        "openmx_model": OPENMX_MODEL,
+        "openmx_total_variance": 1.0,
         "training_grid_summaries_sha256": grid_summaries_fingerprint,
         "openmx_backend": str(Path(args.openmx_backend).resolve()),
     }

@@ -267,19 +267,23 @@ sbatch --dependency=afterok:"$grid_aggregate_job" \
 
 Step 05 compares OpenMx with NPE-100k/200k/300k/500k on the same datasets.
 Its paired bias, MAE, RMSE, uncertainty, and coverage outputs are saved to
-`results/training_set_size_openmx_comparison/`. The coverage intervals
-are Wu–Neale Wald-test-adjusted OpenMx profile intervals for A/C, the existing
-estimate ± 1.96 SE interval for OpenMx E, and NPE posterior 2.5%–97.5%
-quantiles. The CSV summary also retains symmetric estimate ± 1.96 uncertainty
-coverage values for comparison.
+`results/training_set_size_openmx_comparison/`. OpenMx fixes the total ACE
+variance at 1, matching the NPE simulation, and estimates A and a fraction of
+the remaining variance so A+C+E=1 by construction. The coverage intervals
+use Wu–Neale Wald-test-adjusted OpenMx profile limits for A/C, estimate ± 1.96
+SE for OpenMx E, and NPE posterior 2.5%–97.5% quantiles. The CSV summary also
+retains symmetric estimate ± 1.96 uncertainty coverage values for comparison.
+The A/C adjustment treats one zero boundary at a time; fits with both A and C
+at zero need separate boundary analysis.
 
 After Step 03 aggregation is complete, submit Step 05 on RC with
-`sbatch ace_npe/05_compare_training_sizes_openmx.sh`. Results made before the
-adjusted OpenMx intervals must be refitted once: their `openmx_estimates.csv`
-files do not contain the interval columns needed for coverage. For later
-plotting updates after a successful adjusted-interval run, use
+`sbatch ace_npe/05_compare_training_sizes_openmx.sh`. Results made with the
+earlier free-total OpenMx model must be refitted; `--reuse-openmx` rejects those
+fits even if their CSV already has adjusted interval columns. Use a new output
+directory to retain the earlier comparison. For later plotting updates after a
+successful fixed-total run, use
 `sbatch ace_npe/05_compare_training_sizes_openmx.sh --reuse-openmx` to reuse
-the saved OpenMx fits. Reuse checks that the paired-data fingerprint matches.
+the saved OpenMx fits. Reuse checks both the model and paired-data fingerprint.
 The Slurm wrapper forwards any script arguments to the Python comparison.
 After a successful Step 05 run, add the interval-width figures without
 refitting OpenMx or reevaluating NPE:
@@ -321,8 +325,9 @@ as `paired_sd_scatter.png` and `paired_bias_scatter.png` for its single NPE arm.
 
 Step 04 separately compares saved fixed-N Dirichlet models with OpenMx on
 200 shared parameter conditions at each N. It uses
-`04_fit_openmx_paired_dirichlet.R` and reports both methods on the same rows
-where OpenMx converged. Its defaults load models from
+`04_fit_openmx_paired_dirichlet.R` with total ACE variance fixed at 1 and
+reports both methods on the same rows where OpenMx converged. Its defaults
+load models from
 `results/models/prior_comparison/dirichlet/N*/` and write results to
 `results/dirichlet_openmx_comparison/`:
 

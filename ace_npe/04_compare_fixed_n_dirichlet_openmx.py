@@ -36,6 +36,7 @@ from openmx_comparison_plots import (
 
 
 DEFAULT_N_PAIRS = (50, 100, 500, 1000, 2000, 5000, 20000)
+OPENMX_MODEL = "fixed_total_variance_1"
 METHOD_COLORS = {"OpenMx": "tab:blue", "NPE": "tab:orange"}
 
 
@@ -1298,6 +1299,10 @@ def main() -> None:
                 "The current paired_test_data.csv differs from the dataset used "
                 "for openmx_estimates.csv; rerun without --reuse_openmx"
             )
+        if previous_config.get("openmx_model") != OPENMX_MODEL:
+            raise ValueError(
+                "Saved OpenMx fits use an earlier model; rerun without --reuse_openmx"
+            )
     else:
         run_openmx(
             args.rscript,
@@ -1306,6 +1311,11 @@ def main() -> None:
             openmx_path.resolve(),
         )
     openmx = pd.read_csv(openmx_path)
+    if (
+        "openmx_model" not in openmx.columns
+        or not openmx["openmx_model"].eq(OPENMX_MODEL).all()
+    ):
+        raise ValueError("OpenMx output is not from the fixed-total-variance model")
 
     npe = evaluate_npe(
         paired,
@@ -1387,6 +1397,8 @@ def main() -> None:
                 "models_dir": str(models_dir),
                 "n_bootstrap_bias_norm": args.n_bootstrap,
                 "paired_data_sha256": paired_fingerprint,
+                "openmx_model": OPENMX_MODEL,
+                "openmx_total_variance": 1.0,
                 "metrics_use_common_openmx_converged_rows": True,
                 "n_is_npe_feature": False,
                 "posterior_kurtosis": "Fisher excess kurtosis",
@@ -1407,8 +1419,8 @@ def main() -> None:
                 "scatter_colors": "true parameter value in each panel; continuous Viridis scale fixed at 0–1",
                 "coverage_interval": "95% Wilson score interval across test datasets",
                 "openmx_native_interval": (
-                    "Wu-Neale Wald-test-adjusted profile limits for standardized "
-                    "A and C; existing estimate +/- 1.96 SE for E"
+                    "Wu-Neale Wald-test-adjusted profile limits for fixed-total "
+                    "A and C; estimate +/- 1.96 SE for E"
                 ),
                 "interval_width_plots": (
                     "widths of native 95% intervals; OpenMx A/C adjusted, "
