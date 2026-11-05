@@ -267,11 +267,11 @@ sbatch --dependency=afterok:"$grid_aggregate_job" \
 
 Step 05 compares OpenMx with NPE-100k/200k/300k/500k on the same datasets.
 Its paired bias, MAE, RMSE, uncertainty, and coverage outputs are saved to
-`results/training_set_size_openmx_comparison/`. The native coverage intervals
+`results/training_set_size_openmx_comparison/`. The coverage intervals
 are Wu–Neale Wald-test-adjusted OpenMx profile intervals for A/C, the existing
 estimate ± 1.96 SE interval for OpenMx E, and NPE posterior 2.5%–97.5%
-quantiles; an additional coverage plot uses estimate ± 1.96 uncertainty for
-every method.
+quantiles. The CSV summary also retains symmetric estimate ± 1.96 uncertainty
+coverage values for comparison.
 
 After Step 03 aggregation is complete, submit Step 05 on RC with
 `sbatch ace_npe/05_compare_training_sizes_openmx.sh`. Results made before the

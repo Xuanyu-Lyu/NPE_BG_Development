@@ -988,26 +988,11 @@ def save_figures(
         methods,
         n_values,
         "coverage_95",
-        "Native 95% interval coverage",
-        "Native 95% interval coverage: OpenMx Wald versus NPE quantiles\n"
+        "95% interval coverage",
+        "95% interval coverage: OpenMx versus NPE\n"
         f"{suffix}",
         output_dir / "paired_coverage_by_n.png",
         interval_columns=("coverage_95_ci_lo", "coverage_95_ci_hi"),
-        reference=0.95,
-    )
-    plot_line_metric(
-        metrics,
-        methods,
-        n_values,
-        "coverage_95_mean_sd",
-        "Mean ± 1.96 uncertainty coverage",
-        "Symmetric 95% coverage: estimate ± 1.96 uncertainty\n"
-        f"{suffix}; OpenMx SE and NPE posterior SD",
-        output_dir / "paired_coverage_mean_pm_1_96sd_by_n.png",
-        interval_columns=(
-            "coverage_95_mean_sd_ci_lo",
-            "coverage_95_mean_sd_ci_hi",
-        ),
         reference=0.95,
     )
     for multiplier in UNCERTAINTY_MULTIPLIERS:
