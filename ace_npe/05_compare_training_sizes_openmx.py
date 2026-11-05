@@ -1148,6 +1148,7 @@ def main() -> None:
         output_dir,
     )
     for obsolete_name in (
+        "paired_coverage_mean_pm_1_96sd_by_n.png",
         "paired_signed_error_threshold_counts_by_n.png",
         "signed_error_threshold_counts.csv",
     ):
