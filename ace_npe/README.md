@@ -297,9 +297,10 @@ the upper minus lower limit of each method's native 95% interval. OpenMx A/C
 use the adjusted intervals; OpenMx E retains its Wald interval. The existing
 SE/SD plots remain separate.
 
-In both comparisons, `paired_mean_uncertainty_by_n.png` retains its historical
-filename but now shows only boxplots of valid test-dataset uncertainties
-(OpenMx SE and NPE posterior SD), with black lines marking **medians**.
+In both comparisons, `paired_uncertainty_by_n.png` shows boxplots of valid
+test-dataset uncertainties (OpenMx SE and NPE posterior SD), with black lines
+marking **medians**. Its y-axis is labeled "Standard Error"; NPE values are
+posterior standard deviations.
 `paired_mae_by_n.png` shows only boxplots of individual absolute errors;
 white diamonds mark their mean (MAE). Both figures have no summary bars.
 The distribution panels split low and high N to keep their scales

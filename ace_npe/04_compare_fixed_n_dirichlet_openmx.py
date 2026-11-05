@@ -723,12 +723,12 @@ def save_mae_plot(
     )
 
 
-def save_mean_uncertainty_plot(
+def save_uncertainty_plot(
     estimates: pd.DataFrame,
     n_values: tuple[int, ...],
     path: Path,
 ) -> None:
-    """Compare median uncertainties and distributions; preserve the filename."""
+    """Compare median uncertainties and distributions."""
     plot_metric_boxplots(
         estimates, ("OpenMx", "NPE"), n_values, METHOD_COLORS, "uncertainty",
         "Median OpenMx SE versus median NPE posterior SD: fixed-N Dirichlet models",
@@ -762,7 +762,6 @@ def save_coverage_plot(
     """Compare empirical 95% interval coverage against the nominal target."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.8), squeeze=False)
     last_n = n_values[-1]
-    test_set_size = int(metrics["n_total"].max())
     for col, parameter in enumerate(ACE_PARAM_NAMES):
         axis = axes[0, col]
         at_parameter = metrics.loc[metrics["parameter"] == parameter]
@@ -810,13 +809,10 @@ def save_coverage_plot(
             )
         axis.set_ylim(lower_limit, 1.005)
         axis.set_title(parameter)
-        axis.set_ylabel("Empirical 95% coverage")
+        axis.set_ylabel("95% interval coverage")
         configure_n_axis(axis, n_values, xlabel="Twin-pair sample size N")
     axes[0, 0].legend()
-    fig.suptitle(
-        "OpenMx versus NPE 95% interval coverage "
-        f"(test set size = {test_set_size:,} per N)"
-    )
+    fig.suptitle("95% interval coverage")
     fig.tight_layout()
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -1340,9 +1336,10 @@ def main() -> None:
     estimates_long = fixed_n_estimates_long(merged)
     save_mae_plot(estimates_long, n_values, output_dir / "paired_mae_by_n.png")
     save_performance_plot(metrics, n_values, output_dir / "paired_performance_by_n.png")
-    save_mean_uncertainty_plot(
-        estimates_long, n_values, output_dir / "paired_mean_uncertainty_by_n.png"
+    save_uncertainty_plot(
+        estimates_long, n_values, output_dir / "paired_uncertainty_by_n.png"
     )
+    (output_dir / "paired_mean_uncertainty_by_n.png").unlink(missing_ok=True)
     save_interval_width_plots(estimates_long, n_values, output_dir)
     for metric, label in (("uncertainty", "sd"), ("error", "bias")):
         plot_paired_scatter(
@@ -1404,7 +1401,7 @@ def main() -> None:
                     "diamonds mark mean bias"
                 ),
                 "mean_bias_plot": "mean signed error with normal-approximation 95% CI",
-                "mean_uncertainty_plot": "boxplots of valid OpenMx SE and NPE SD; black lines mark medians (legacy mean filename)",
+                "uncertainty_plot": "boxplots of valid OpenMx SE and NPE SD; black lines mark medians",
                 "mae_plot": "test-dataset absolute-error boxplots; white diamonds mark MAE",
                 "scatter_plots": "SD and signed error per test dataset; OpenMx x, NPE y; panels by N and parameter",
                 "scatter_colors": "true parameter value in each panel; continuous Viridis scale fixed at 0–1",

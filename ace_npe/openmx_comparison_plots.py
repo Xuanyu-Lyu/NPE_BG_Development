@@ -103,7 +103,7 @@ def plot_metric_boxplots(
     ]
     show_mae = metric == "absolute_error"
     distribution_label = {
-        "uncertainty": "Uncertainty (OpenMx SE / NPE SD)",
+        "uncertainty": "Standard Error",
         "interval_width": "95% interval width",
         "absolute_error": "Absolute error |estimate - truth|",
     }[metric]

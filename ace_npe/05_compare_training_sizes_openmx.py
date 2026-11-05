@@ -970,7 +970,7 @@ def save_figures(
         METHOD_COLORS,
         "uncertainty",
         f"Median OpenMx SE versus median NPE posterior SD\n{suffix}",
-        output_dir / "paired_mean_uncertainty_by_n.png",
+        output_dir / "paired_uncertainty_by_n.png",
     )
     save_interval_width_figures(
         estimates, k_values, n_values, n_test_datasets, output_dir
@@ -989,8 +989,7 @@ def save_figures(
         n_values,
         "coverage_95",
         "95% interval coverage",
-        "95% interval coverage: OpenMx versus NPE\n"
-        f"{suffix}",
+        "95% interval coverage",
         output_dir / "paired_coverage_by_n.png",
         interval_columns=("coverage_95_ci_lo", "coverage_95_ci_hi"),
         reference=0.95,
@@ -1148,6 +1147,7 @@ def main() -> None:
         output_dir,
     )
     for obsolete_name in (
+        "paired_mean_uncertainty_by_n.png",
         "paired_coverage_mean_pm_1_96sd_by_n.png",
         "paired_signed_error_threshold_counts_by_n.png",
         "signed_error_threshold_counts.csv",
@@ -1169,7 +1169,7 @@ def main() -> None:
         "metrics_use_common_openmx_converged_rows": True,
         "openmx_uncertainty": "delta-method standard error",
         "npe_uncertainty": "posterior standard deviation",
-        "uncertainty_plot": "valid uncertainty boxplots; black lines mark medians (legacy mean filename)",
+        "uncertainty_plot": "valid OpenMx SE and NPE posterior SD boxplots; black lines mark medians",
         "mae_plot": "test-dataset absolute-error boxplots; white diamonds mark MAE",
         "scatter_plots": "one SD and signed-error scatter PNG per K; OpenMx x, NPE y; panels by N and parameter",
         "scatter_colors": "true parameter value in each panel; continuous Viridis scale fixed at 0–1",
