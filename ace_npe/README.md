@@ -250,6 +250,12 @@ python ace_npe/02_train_npe.py --data ace_training_data.csv \
 ```
 
 This Step 02 example trains across N and includes its sample-size encoding.
+Step 02 holds out the test rows first, then lets sbi split the remaining rows
+into training and validation sets. sbi fits its feature normalization on its
+training rows, so new Step 02 runs take raw summary statistics at prediction
+time and do not save `feature_scaler.pkl`. `load_posterior()` continues to
+apply the saved scaler when loading older runs.
+
 Steps 03 and 06 instead train separate fixed-N models with four inputs.
 
 Step 03 uses `K=10k,20k,50k,100k,200k,300k,500k` across the seven N values listed

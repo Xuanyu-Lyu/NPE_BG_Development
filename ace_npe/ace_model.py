@@ -48,6 +48,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import joblib
+from sklearn.preprocessing import FunctionTransformer
 from scipy.stats import gaussian_kde
 from torch.distributions import Distribution, constraints
 
@@ -455,7 +456,7 @@ def build_features(mz_var, mz_cov, dz_var, dz_cov, N, feature_cols):
 
 def load_posterior(model_dir):
     """
-    Load a trained NPE run: the posterior, its feature scaler, and its config.
+    Load a trained NPE run: the posterior, feature transform, and config.
 
     Args:
         model_dir: Path to a run directory produced by 02_train_npe.py
@@ -520,7 +521,16 @@ def load_posterior(model_dir):
     with open(posterior_path, "rb") as f:
         posterior = pickle.load(f)
 
-    scaler = joblib.load(model_dir / "feature_scaler.pkl")
+    # New runs normalize inside sbi using its actual training split. Return an
+    # identity transform so existing callers can keep using scaler.transform().
+    # Older runs still need the StandardScaler saved with their posterior.
+    preprocessing = config.get("feature_preprocessing")
+    if preprocessing == "sbi_z_score_x":
+        scaler = FunctionTransformer()
+    elif preprocessing is None:
+        scaler = joblib.load(model_dir / "feature_scaler.pkl")
+    else:
+        raise ValueError(f"Unsupported feature_preprocessing: {preprocessing!r}")
 
     if hasattr(posterior, "_neural_net"):
         posterior._neural_net.eval()

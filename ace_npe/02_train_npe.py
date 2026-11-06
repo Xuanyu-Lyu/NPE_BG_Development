@@ -8,8 +8,8 @@ are transformed back to positive A, C, E values that sum to fixed V.
 
 Architecture overview
 ---------------------
-1. **Conditioning input**: the 4 (or 5) summary statistics, standardized by a
-   ``StandardScaler`` fitted on the training split.  These are fed to the flow
+1. **Conditioning input**: the 4 (or 5) raw summary statistics, standardized
+   internally by ``sbi`` using its training split. These are fed to the flow
    DIRECTLY via ``nn.Identity()`` — no embedding network is used.  See the
    "Why no embedding network?" section of README.md for the reasoning;
    ``ace_model.ACEEmbeddingNet`` remains available as a drop-in replacement.
@@ -55,8 +55,6 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-import joblib
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
 from sbi.inference import SNPE
@@ -383,27 +381,19 @@ def main():
         "learning log(A/E), log(C/E)"
     )
 
-    # ---- Train/val/test split (70/15/15) ----
+    # ---- Hold out the test set; sbi splits the remaining rows for validation ----
     n_samples = len(df)
     rng       = np.random.default_rng(42)
     indices   = rng.permutation(n_samples)
     n_train   = int(n_samples * 0.70)
     n_val     = int(n_samples * 0.15)
-
-    X_train = X[indices[:n_train]]
-    theta_train = theta[indices[:n_train]]
-    X_val   = X[indices[n_train:n_train + n_val]]
-    theta_val = theta[indices[n_train:n_train + n_val]]
-    X_test  = X[indices[n_train + n_val:]]
-    y_test  = y[indices[n_train + n_val:]]
-    print(f"\nData split: {len(X_train)} train | {len(X_val)} val | {len(X_test)} test")
-
-    # ---- Scale features (ALR theta is not scaled here; sbi handles it) ----
-    feature_scaler = StandardScaler()
-    X_train_s = feature_scaler.fit_transform(X_train)
-    X_val_s   = feature_scaler.transform(X_val)
-    X_test_s  = feature_scaler.transform(X_test)
-    joblib.dump(feature_scaler, output_dir / 'feature_scaler.pkl')
+    n_fit = n_train + n_val
+    X_fit = X[indices[:n_fit]]
+    theta_fit = theta[indices[:n_fit]]
+    X_test = X[indices[n_fit:]]
+    y_test = y[indices[n_fit:]]
+    validation_fraction = n_val / n_fit
+    print(f"\nData split: {len(X_fit)} train+val | {len(X_test)} test")
 
     # ---- Define the exact STEP 01 Dirichlet prior in ALR coordinates ----
     print("\n" + "="*70)
@@ -420,10 +410,10 @@ def main():
     print("MODEL ARCHITECTURE")
     print("="*70)
 
-    n_features = X_train.shape[1]
+    n_features = X_fit.shape[1]
 
-    # NOTE: the flow conditions on the standardized summary statistics
-    # DIRECTLY (nn.Identity), not on a learned embedding.  With only 4-5
+    # NOTE: the flow conditions on sbi-standardized summary statistics
+    # DIRECTLY (nn.Identity), not on a learned embedding. With only 4-5
     # near-sufficient statistics there is nothing to compress, and an
     # unnecessary bottleneck can only discard information.  See README.md,
     # "Why no embedding network?".  To re-enable the embedding net, swap the
@@ -436,7 +426,7 @@ def main():
 
     print(f"\nConditioning input (no embedding network):")
     print(f"  Input features : {n_features}  → fed directly to the flow")
-    print(f"  Standardizer   : StandardScaler (fit on the training split)")
+    print(f"  Standardizer   : sbi z_score_x (fit on sbi's training split)")
     print(f"  Embedding      : nn.Identity()   [ACEEmbeddingNet available but bypassed]")
 
     density_estimator_fn = posterior_nn(
@@ -464,12 +454,9 @@ def main():
         device=str(device),
     )
 
-    X_all = np.vstack([X_train_s, X_val_s])
-    theta_all = np.vstack([theta_train, theta_val])
-
     inference.append_simulations(
-        theta=torch.tensor(theta_all, dtype=torch.float32),
-        x=torch.tensor(X_all, dtype=torch.float32),
+        theta=torch.tensor(theta_fit, dtype=torch.float32),
+        x=torch.tensor(X_fit, dtype=torch.float32),
     )
 
     density_estimator = inference.train(
@@ -478,7 +465,11 @@ def main():
         max_num_epochs=args.epochs,
         stop_after_epochs=args.stop_after_epochs,
         show_train_summary=True,
-        validation_fraction=len(X_val_s) / len(X_all),
+        validation_fraction=validation_fraction,
+    )
+    print(
+        f"  sbi split: {len(inference.train_indices)} train | "
+        f"{len(inference.val_indices)} val | {len(X_test)} test"
     )
 
     # ---- Build and save posterior ----
@@ -505,7 +496,7 @@ def main():
 
     # ---- Evaluate and plot ----
     results = evaluate_npe(
-        posterior, X_test_s, y_test, ACE_PARAM_NAMES,
+        posterior, X_test, y_test, ACE_PARAM_NAMES,
         output_dir, n_posterior_samples=args.n_posterior_samples,
         device=device, n_eval=args.n_eval,
     )
@@ -519,6 +510,7 @@ def main():
         'flow_transforms': args.flow_transforms,
         'n_features': n_features,
         'feature_cols': feature_cols,
+        'feature_preprocessing': 'sbi_z_score_x',
         # How *_var was reduced from the 2x2 sample covariance matrix.
         # Downstream scripts refuse to trust a run whose value differs.
         'var_feature': VAR_REDUCTION,
@@ -534,8 +526,8 @@ def main():
         'total_variance': args.total_variance,
         'theta_parameterization': 'ALR: log(A/E), log(C/E); E reconstructed',
         'latent_param_names': ['log_A_over_E', 'log_C_over_E'],
-        'training_rows': len(X_train),
-        'validation_rows': len(X_val),
+        'training_rows': len(inference.train_indices),
+        'validation_rows': len(inference.val_indices),
         'test_rows': len(X_test),
         'source_data': str(data_path),
     }
