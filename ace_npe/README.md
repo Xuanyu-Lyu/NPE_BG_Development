@@ -50,12 +50,48 @@ The standardized covariance summaries enter the flow directly through
 | 09 | `09_decompose_fixed_theta_variance.py` | Compare total, model, dataset, and posterior uncertainty |
 | 10 | `10_compare_fixed_theta_npe_grid.R` | Compare the Step 08 NPE estimates with a Bayesian grid posterior |
 | 11 | `11_compare_ae_ace_ppc.py` | Compare AE and ACE NPE predictive fit on two fixed observations |
+| 12 | `12_acde_identification.py` | Train ACDE NPEs and inspect nonidentification across sample sizes |
 
 Steps 03 and 06 train transient models independently and require no saved
 models from Step 02. Step 05 uses Step 03's compact results and regenerates its
 exact test covariance matrices; it does not load or retrain NPEs. Steps 04, 07,
 and 08 require saved models. Steps 09 and 10 require the completed Step 08
 aggregation.
+
+## Step 12: ACDE identification check
+
+Step 12 adds dominance variance `D` and uses `(A,C,D,E) ~
+Dirichlet(1,1,1,1)` with total variance fixed at one. Its MZ covariance is
+`A+C+D`; its DZ covariance is `0.5*A+C+0.25*D`. It trains one fixed-N NPE at
+each N in `50, 100, 500, 1000, 2000, 5000, 20000`, with 200,000 training
+simulations per model. The evaluation uses the same 1,000 independently drawn
+Dirichlet truths across N, a fresh sample covariance dataset per truth and N,
+and 2,000 posterior draws per dataset. The estimate is the posterior mean.
+These settings are defaults in `12_acde_identification.py`.
+
+Submit the seven cells and aggregation on Alpine from the repository root:
+
+```bash
+acde_job=$(sbatch --parsable ace_npe/12_acde_identification.sh)
+sbatch --dependency=afterok:"$acde_job" \
+  ace_npe/12_aggregate_acde_identification.sh
+```
+
+The aggregate writes `results/step12_acde_identification/acde_recovery.csv`,
+posterior SD and absolute-error boxplots by N, and true-versus-posterior-mean
+scatter plots by N. The SD plots include the median analytic infinite-N limit
+for these 1,000 truths under the uniform simplex prior. Only the N=1,000 cell
+also generates two focused datasets at `(A,C,D,E)=(0.30,0.30,0.20,0.20)` and
+`(0.45,0.25,0.10,0.20)`. They have the same population MZ covariance (0.8)
+and DZ covariance (0.5), but distinct
+sample covariances. The focused figures show joint posterior draws and the
+analytic identification line, posterior predictions of the *population*
+covariances, and noisy covariance-summary posterior predictive checks. The
+focused covariance and PPC figures use the same aligned two-row layout as
+Step 11's ACE–AE comparison. Their numeric summaries are
+`focused_covariance_recovery.csv` and `focused_ppc.csv`.
+The exact identification line is `A=0.6-1.5D`, `C=0.2+0.5D`, `E=0.2`, for
+`0<=D<=0.4`.
 
 ## Step 06: posterior diagnostics and PPCs on RC
 
