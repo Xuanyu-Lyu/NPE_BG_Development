@@ -79,17 +79,15 @@ sbatch --dependency=afterok:"$acde_job" \
 
 The aggregate writes `results/step12_acde_identification/acde_recovery.csv`,
 posterior SD and absolute-error boxplots by N, and true-versus-posterior-mean
-scatter plots by N. The SD plots include the median analytic infinite-N limit
-for these 1,000 truths under the uniform simplex prior. Only the N=1,000 cell
-also generates two focused datasets at `(A,C,D,E)=(0.30,0.30,0.20,0.20)` and
-`(0.45,0.25,0.10,0.20)`. They have the same population MZ covariance (0.8)
+scatter plots by N. Only the N=1,000 cell also generates two focused datasets
+at `(A,C,D,E)=(0.30,0.30,0.20,0.20)` and `(0.45,0.25,0.10,0.20)`. They have
+the same population MZ covariance (0.8)
 and DZ covariance (0.5), but distinct
-sample covariances. The focused figures show joint posterior draws and the
-analytic identification line, posterior predictions of the *population*
-covariances, and noisy covariance-summary posterior predictive checks. The
-focused covariance and PPC figures use the same aligned two-row layout as
-Step 11's ACE–AE comparison. Their numeric summaries are
-`focused_covariance_recovery.csv` and `focused_ppc.csv`.
+sample covariances. The focused figures show joint posterior draws with the
+analytic identification line and noisy covariance-summary posterior predictive
+checks. The PPC figure uses the same aligned two-row layout as Step 11's
+ACE–AE comparison. Numeric population covariance predictions and PPC summaries
+are saved in `focused_covariance_recovery.csv` and `focused_ppc.csv`.
 The exact identification line is `A=0.6-1.5D`, `C=0.2+0.5D`, `E=0.2`, for
 `0<=D<=0.4`.
 

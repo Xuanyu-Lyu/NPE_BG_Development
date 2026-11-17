@@ -240,14 +240,6 @@ def save_boxplots(frame: pd.DataFrame, n_values: tuple[int, ...], column: str,
                 for n in n_values]
         ax.boxplot(data, positions=np.arange(len(n_values)), widths=0.6,
                    showfliers=False, medianprops={"color": "#CC3311"})
-        if column == "posterior_sd":
-            reference = frame.loc[(frame.N == n_values[0]) &
-                                  (frame.parameter == param),
-                                  "identification_limit_sd"].median()
-            ax.axhline(reference, color="#228833", linestyle=":", linewidth=1.5,
-                       label="Median N→∞ limit")
-            if j == 0:
-                ax.legend(frameon=False, fontsize=8)
         ax.set_title(param)
         ax.set_ylabel(column.replace("_", " ").title())
         ax.set_xticks(range(len(n_values)), [str(n) for n in n_values], rotation=45)
@@ -353,53 +345,6 @@ def save_focused_ppc_comparison(focused: dict, path: Path, n: int) -> None:
     plt.close(fig)
 
 
-def save_focused_covariance_comparison(focused: dict, path: Path, n: int) -> None:
-    """Aligned population-covariance predictions for the same two datasets."""
-    colors = ("#4477AA", "#228833")
-    predicted = population_features(focused["posterior"])
-    target = population_features(focused["truths"])
-    observed = focused["observed"]
-    fig, axes = plt.subplots(2, 4, figsize=(16, 7.6), squeeze=False)
-    for col, feature in enumerate(COV_FEATURE_NAMES):
-        combined = np.concatenate((predicted[:, :, col].ravel(), observed[:, col]))
-        span = max(float(np.ptp(combined)), 0.01)
-        bins = np.linspace(combined.min() - 0.03 * span,
-                           combined.max() + 0.03 * span, 31)
-        for row, _ in enumerate(FOCUSED):
-            ax = axes[row, col]
-            if col in (0, 2):
-                # The fixed-sum prior makes population variances exactly one.
-                ax.axvline(1.0, color=colors[row], linewidth=5, alpha=0.7)
-                ax.text(0.03, 0.88, "Fixed at 1 by prior", transform=ax.transAxes,
-                        fontsize=9, va="top")
-                ax.set_yticks([])
-                ax.set_xlim(min(1.0, *observed[:, col]) - 0.01,
-                            max(1.0, *observed[:, col]) + 0.01)
-            else:
-                ax.hist(predicted[row, :, col], bins=bins,
-                        color=colors[row], alpha=0.7)
-            ax.axvline(observed[row, col], color="black", linestyle="--",
-                       linewidth=1.6, label="Observed sample")
-            ax.axvline(target[row, col], color="#CC3311", linestyle=":",
-                       linewidth=1.7, label="Population truth")
-            ax.set_xlabel(feature)
-            if col == 0:
-                ax.set_ylabel(f"ACDE truth {row + 1}\nPosterior draws")
-                if row == 0:
-                    ax.legend(frameon=False, fontsize=8)
-            ax.grid(alpha=0.15)
-        axes[1, col].sharex(axes[0, col])
-    fig.suptitle(
-        f"Population covariance recovery for two ACDE datasets; N={n:,} pairs per group\n"
-        "Both truths imply mz_cov=0.8 and dz_cov=0.5; "
-        "dashed: observed sample, dotted: population truth",
-        fontsize=12,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.89))
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-
 def aggregate(args, output: Path) -> None:
     cells = output / "cells"
     frames = []
@@ -427,6 +372,8 @@ def aggregate(args, output: Path) -> None:
     result.to_csv(output / "acde_recovery.csv", index=False)
     figures = output / "figures"
     figures.mkdir(parents=True, exist_ok=True)
+    # An earlier Step 12 version produced this figure; remove it on re-aggregation.
+    (figures / "covariance_recovery_two_cases.png").unlink(missing_ok=True)
     for col in ("posterior_sd", "absolute_error"):
         save_boxplots(result, args.n_values, col,
                       figures / f"{col}_boxplot.png", args)
@@ -441,8 +388,6 @@ def aggregate(args, output: Path) -> None:
                        population_features(focused["truths"])[1], atol=1e-8):
         raise ValueError("Focused cases do not share population covariances")
     save_focused_ppc_comparison(focused, figures / "ppc_two_cases.png", args.focus_n)
-    save_focused_covariance_comparison(
-        focused, figures / "covariance_recovery_two_cases.png", args.focus_n)
     ppc_rows = []
     covariance_rows = []
     for i, (label, _) in enumerate(FOCUSED):
